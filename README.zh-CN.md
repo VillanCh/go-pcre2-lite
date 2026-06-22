@@ -1,5 +1,7 @@
 # go-pcre2-lite
 
+[![CI](https://github.com/VillanCh/go-pcre2-lite/actions/workflows/ci.yml/badge.svg)](https://github.com/VillanCh/go-pcre2-lite/actions/workflows/ci.yml)
+
 [English](README.md) | **简体中文**
 
 一个高性能、可嵌入的 Go 正则表达式库：底层是一份经过裁剪的 **PCRE2 8 位解释器**，

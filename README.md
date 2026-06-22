@@ -1,5 +1,7 @@
 # go-pcre2-lite
 
+[![CI](https://github.com/VillanCh/go-pcre2-lite/actions/workflows/ci.yml/badge.svg)](https://github.com/VillanCh/go-pcre2-lite/actions/workflows/ci.yml)
+
 **English** | [简体中文](README.zh-CN.md)
 
 A high-performance, embeddable regular-expression library for Go, built on a
