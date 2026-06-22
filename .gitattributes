@@ -1,0 +1,15 @@
+# Keep line endings stable across platforms.
+#
+# Windows CI runners default to core.autocrlf=true, which rewrites LF -> CRLF on
+# checkout. That corrupts the byte-exact PCRE2 test corpora under testdata/ (each
+# subject and expected value gains a trailing \r) and breaks the corpus tests.
+# Pin the whole repo to LF, and treat the corpora as binary so no end-of-line
+# translation is ever applied to them.
+
+* text=auto eol=lf
+
+# Byte-exact oracle data / golden corpora: never translate line endings.
+testdata/** -text
+
+# Binary assets.
+*.png binary
