@@ -1,9 +1,9 @@
 PCRE2 upstream vendored by tools/generate-pcre2lite/generate.sh
-version: 10.43
-tarball: pcre2-10.43.tar.gz
-url: https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.43/pcre2-10.43.tar.gz
-sha256: 889d16be5abb8d05400b33c25e151638b8d4bac0e2d9c76e9d6923118ae8a34e
-generated: 2026-06-23T00:33:35Z
+version: 10.47
+tarball: pcre2-10.47.tar.gz
+url: https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.47/pcre2-10.47.tar.gz
+sha256: c08ae2388ef333e8403e670ad70c0a11f1eed021fd88308d7e02f596fcd9dc16
+generated: 2026-06-23T00:49:43Z
 jit: permanently-disabled (SUPPORT_JIT never defined)
 widths: 8-bit only
 
@@ -11,6 +11,8 @@ sources:
   pcre2_auto_possess.c
   pcre2_chkdint.c
   pcre2_compile.c
+  pcre2_compile_cgroup.c
+  pcre2_compile_class.c
   pcre2_config.c
   pcre2_context.c
   pcre2_error.c
@@ -19,6 +21,7 @@ sources:
   pcre2_maketables.c
   pcre2_match.c
   pcre2_match_data.c
+  pcre2_match_next.c
   pcre2_newline.c
   pcre2_ord2utf.c
   pcre2_pattern_info.c
@@ -35,7 +38,9 @@ headers:
   pcre2_internal.h
   pcre2_intmodedep.h
   pcre2_ucp.h
+  pcre2_compile.h
+  pcre2_util.h
   pcre2.h (from pcre2.h.generic)
   pcre2_config.h (from config.h.generic, patched)
 included (not compiled standalone):
-  pcre2_ucptables.c.inc (from pcre2_ucptables.c)
+  pcre2_ucptables_inc.h

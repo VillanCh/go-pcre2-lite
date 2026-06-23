@@ -24,12 +24,13 @@ These are covered by the differential and corpus test suites in this repo:
 
 - Whole-match results across **1585 inputs / 764 patterns** from the PCRE2
   official `testoutput1` corpus: **100% agreement** with `dlclark/regexp2`.
-- Behaviour against **PCRE2 10.42's own official regression corpora**
+- Behaviour against **PCRE2 10.47's own official regression corpora**
   (`testoutput2` for features/boundaries, `testoutput4` for UTF/Unicode
-  properties): match results agree on **761/761** 8-bit cases and **1347/1347**
-  UTF cases; compile accept/reject agrees on **1080/1080** accepted and
-  **286/286** rejected patterns. This pins the engine to upstream ground truth,
-  not just to `dlclark`.
+  properties): match results agree on **929/931** 8-bit cases and **1502/1504**
+  UTF cases; compile accept/reject agrees on **1258/1258** accepted and
+  **385/388** rejected patterns. This pins the engine to upstream ground truth,
+  not just to `dlclark`. (The few misses are boundary cases the lightweight
+  corpus parser approximates, not engine bugs.)
 - Capture groups, named groups, lookahead/lookbehind, backreferences, anchors,
   alternation, greedy/lazy quantifiers, multiline, case-insensitive, Unicode
   `\w`/`\d`/`\p{...}` classes.
@@ -113,6 +114,13 @@ PCRE2 accepts many constructs .NET does not (atomic groups, possessive
 quantifiers, recursion, `\K`, subroutine calls), so some patterns that fail to
 compile under `dlclark` compile here.
 
+The shorthand escapes `\h`/`\H` (horizontal whitespace) and `\v`/`\V` (vertical
+whitespace) follow **PCRE2** semantics, which differ from .NET: in .NET `\v`
+matches only the vertical tab `U+000B`, whereas in PCRE2 `\v` is the vertical
+whitespace class (it also matches `\n`, `\r`, `\f` and `U+0085`/`U+2028`/`U+2029`
+in Unicode mode). A pattern like `\v` against `"\r"` therefore matches here but
+not under `dlclark`. This is an inherent engine difference, not a porting bug.
+
 ### 7. Invalid UTF-8 input
 
 The compat layer normalises invalid UTF-8 in the **subject** to the Unicode
@@ -130,7 +138,7 @@ and against real-world ReDoS CVEs. What ports cleanly and what does not:
 **Ports identically to JS:**
 
 - Fixed-length lookbehind with captures: `(?<=(\w(\w)))def`, `(?<=(bc)|(cd)).`.
-- Variable-length lookbehind, e.g. `(?<=[ab]+)x`, `(?<="text":\s*")`: PCRE2 10.43
+- Variable-length lookbehind, e.g. `(?<=[ab]+)x`, `(?<="text":\s*")`: PCRE2 10.47
   supports bounded variable-length lookbehind natively, and the compat layer
   (`compat.go`) tightens otherwise-unbounded quantifiers (`*` `+` `{n,}`) inside a
   lookbehind to a bounded form (`{0,512}` etc.) so they compile and match. The
@@ -146,7 +154,7 @@ and against real-world ReDoS CVEs. What ports cleanly and what does not:
 
 **Documented JS-vs-PCRE2 divergences** (each has a dedicated test):
 
-| JS construct | JS behaviour | PCRE2 10.43 behaviour |
+| JS construct | JS behaviour | PCRE2 10.47 behaviour |
 |---|---|---|
 | Lookbehind whose length depends on a backreference, e.g. `(?<=a(.\2)b(\1))` | accepted | **compile error** (length not boundable) |
 | Long `General_Category` name `\p{Number}` | accepted | **compile error** — use the short alias `\p{N}` |
@@ -166,13 +174,15 @@ effective defense is capping input length.
 
 Measured on Apple M-series (`go test -bench`), `p2` = this compat layer:
 
+Measured against vendored PCRE2 10.47:
+
 | Scenario              | dlclark            | pcre2-lite       | Speedup | Alloc |
 |-----------------------|--------------------|------------------|---------|-------|
-| Boolean match (short) | 6496 ns, 224 B     | 1103 ns, 0 B     | 5.9x    | 0     |
-| 100 KB single match   | 26 ms, 418 KB      | 4.4 ms, 0 B      | 5.9x    | 0     |
-| Backreference         | 401 ns, 144 B      | 184 ns, 0 B      | 2.2x    | 0     |
-| Backtracking-heavy    | 766 µs, 4 KB       | 252 µs, 0 B      | 3.0x    | 0     |
-| ReDoS (default limit) | hangs w/o timeout  | 122 ms (bounded) | --      | 0     |
+| Boolean match (short) | 6472 ns, 224 B     | 676 ns, 0 B      | 9.6x    | 0     |
+| 100 KB single match   | 26 ms, 418 KB      | 2.84 ms, 0 B     | 9.3x    | 0     |
+| Backreference         | 396 ns, 144 B      | 186 ns, 0 B      | 2.1x    | 0     |
+| Backtracking-heavy    | 20 ms, 131 KB      | 10.9 ms, 0 B     | 1.8x    | 0     |
+| ReDoS (default limit) | hangs w/o timeout  | 120 ms (bounded) | --      | 0     |
 | ReDoS (limit 50k)     | --                 | 0.6 ms           | --      | 0     |
 
 Boolean matching is allocation-free on the hot path.
@@ -180,7 +190,7 @@ Boolean matching is allocation-free on the hot path.
 ## How compatibility is verified
 
 - `corpus_pcre_test.go`   — 1585 inputs from PCRE2 `testoutput1`, dl-vs-p2.
-- `pcre2_official_test.go` — PCRE2 10.42 own corpora (`testoutput2` features/
+- `pcre2_official_test.go` — PCRE2 10.47 own corpora (`testoutput2` features/
   boundaries, `testoutput4` UTF/properties): match + compile accept/reject vs
   upstream ground truth.
 - `js_regex_test.go`      — JS/Node compatibility (test262/V8 lookbehind, named
@@ -188,5 +198,12 @@ Boolean matching is allocation-free on the hot path.
 - `differential_test.go`, `differential_replace_test.go` — core + replace parity.
 - `feature_compat_test.go` — full-iteration, all-group, named-group parity.
 - `safety_test.go`        — ReDoS bounding, invalid UTF-8, huge input, deep nesting.
+- `pcre2_1047_regression_test.go` — per-version behaviour pins for 10.44–10.47
+  (variable-length lookbehind first-branch fix, `\X` ZWJ grapheme break, scan-
+  substring `(*scs:)`/`(*scan_substring:)`, `(*ACCEPT)`-in-scs CVE-2025-58050
+  memory safety, 10.47 subroutine-returning-captures `(?N(group,...))`,
+  `pcre2_next_match` `\K`/empty-match iteration, UCD 16 properties, group-name
+  128-char limit boundary, and the named-group hash-lookup guard). Every case is
+  asserted against the authoritative `pcre2test` golden output for that release.
 - `stress_test.go`        — 20k+ random adversarial patterns, all bounded.
 - `benchmark*_test.go`    — throughput/allocation vs dlclark and std `regexp`.

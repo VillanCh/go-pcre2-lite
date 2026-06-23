@@ -13,7 +13,7 @@ import (
 // 目前覆盖两类:
 //  1. 字符类里 "集合简写不能作为范围端点" 导致的 invalid range. 例如 [\d\w-_]: PCRE2 会把
 //     \w-_ 当成 \w 到 _ 的范围而报错, 而 .NET/RE2 把 - 视为字面量. 改写为把该 - 转义成 \-.
-//  2. lookbehind 里的无界量词. 例如 (?<="text":\s*"): \s* 长度无上界. PCRE2 10.43 已原生支持
+//  2. lookbehind 里的无界量词. 例如 (?<="text":\s*"): \s* 长度无上界. PCRE2 10.47 已原生支持
 //     "有界变长 lookbehind"(各分支长度有上限即可), 因此有界量词(? {n,m})无需改写; 只需把无界
 //     量词收紧成有上界的形式: * -> {0,N}, + -> {1,N}, {n,} -> {n,N}. 这是一个兜底近似(超过 N
 //     次重复将不被匹配), 与 .NET 的无上限语义存在差异, 但覆盖绝大多数真实场景. 配合 wrapper.c
@@ -278,7 +278,7 @@ type unboundedQuant struct {
 }
 
 // boundUnboundedQuantifiers 把 lookbehind body 中的无界量词(* + {n,})收紧成有上界形式
-// ({0,N} {1,N} {n,N}, N=varLookbehindCap). 有界量词(? {n,m} {n})原样保留(PCRE2 10.43 原生
+// ({0,N} {1,N} {n,N}, N=varLookbehindCap). 有界量词(? {n,m} {n})原样保留(PCRE2 10.47 原生
 // 支持有界变长 lookbehind). 返回收紧后的 body 及是否发生改写. 扫描感知转义/字符类/分组前缀.
 func boundUnboundedQuantifiers(body string) (string, bool) {
 	qs := findUnboundedQuantifiers(body)

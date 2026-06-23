@@ -20,10 +20,10 @@
 
 set -euo pipefail
 
-PCRE2_VERSION="10.43"
+PCRE2_VERSION="10.47"
 PCRE2_TARBALL="pcre2-${PCRE2_VERSION}.tar.gz"
 PCRE2_URL="https://github.com/PCRE2Project/pcre2/releases/download/pcre2-${PCRE2_VERSION}/${PCRE2_TARBALL}"
-PCRE2_SHA256="889d16be5abb8d05400b33c25e151638b8d4bac0e2d9c76e9d6923118ae8a34e"
+PCRE2_SHA256="c08ae2388ef333e8403e670ad70c0a11f1eed021fd88308d7e02f596fcd9dc16"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODULE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -32,10 +32,15 @@ CACHE_DIR="${PCRE2LITE_CACHE_DIR:-${TMPDIR:-/tmp}/pcre2lite-cache}"
 
 # C source files required for the 8-bit interpreter (each compiled standalone).
 # JIT, DFA, convert, serialize, POSIX and the command line tools are excluded.
+# Since PCRE2 10.47 the compiler is split across pcre2_compile.c plus the
+# standalone units pcre2_compile_cgroup.c and pcre2_compile_class.c, and a new
+# pcre2_match_next.c provides the pcre2_next_match() iteration helper.
 SOURCES=(
   pcre2_auto_possess.c
   pcre2_chkdint.c
   pcre2_compile.c
+  pcre2_compile_cgroup.c
+  pcre2_compile_class.c
   pcre2_config.c
   pcre2_context.c
   pcre2_error.c
@@ -44,6 +49,7 @@ SOURCES=(
   pcre2_maketables.c
   pcre2_match.c
   pcre2_match_data.c
+  pcre2_match_next.c
   pcre2_newline.c
   pcre2_ord2utf.c
   pcre2_pattern_info.c
@@ -57,18 +63,22 @@ SOURCES=(
   pcre2_xclass.c
 )
 
-# Internal headers required by the sources above.
+# Internal headers required by the sources above. Since 10.47 pcre2_compile.h
+# carries the shared compiler declarations and pcre2_util.h the assertion/util
+# helpers pulled in by pcre2_internal.h.
 HEADERS=(
   pcre2_internal.h
   pcre2_intmodedep.h
   pcre2_ucp.h
+  pcre2_compile.h
+  pcre2_util.h
 )
 
-# Data files that are #included by a source file rather than compiled on their
-# own. They are renamed to a ".inc" suffix so that the Go toolchain does not try
-# to compile them as standalone translation units.
-INCLUDED=(
-  pcre2_ucptables.c
+# Header-only data tables that are #included by a source file rather than
+# compiled on their own. Since 10.47 upstream already ships this as a .h file
+# (pcre2_ucptables_inc.h, included by pcre2_tables.c), so no renaming is needed.
+INCLUDED_HEADERS=(
+  pcre2_ucptables_inc.h
 )
 
 log() { printf '[generate-pcre2lite] %s\n' "$*" >&2; }
@@ -114,10 +124,12 @@ ROOT="${WORK_DIR}/pcre2-${PCRE2_VERSION}"
 mkdir -p "${OUTPUT_DIR}"
 
 # Remove previously generated upstream files so deletions upstream propagate.
+# pcre2_*.h covers the internal headers (including pcre2_ucptables_inc.h);
+# pcre2_*.c.inc removes any legacy .inc files vendored by older revisions.
 rm -f "${OUTPUT_DIR}"/pcre2_*.c "${OUTPUT_DIR}"/pcre2_*.c.inc \
+      "${OUTPUT_DIR}"/pcre2_*.h \
       "${OUTPUT_DIR}/pcre2.h" "${OUTPUT_DIR}/config.h" \
-      "${OUTPUT_DIR}/pcre2_config.h" "${OUTPUT_DIR}/pcre2_internal.h" \
-      "${OUTPUT_DIR}/pcre2_intmodedep.h" "${OUTPUT_DIR}/pcre2_ucp.h" \
+      "${OUTPUT_DIR}/pcre2_config.h" \
       "${OUTPUT_DIR}/upstream-version.txt" 2>/dev/null || true
 
 log "copying ${#SOURCES[@]} source files"
@@ -136,14 +148,14 @@ cp "${SRC}/pcre2.h.generic" "${OUTPUT_DIR}/pcre2.h"
 # Default character tables: shipped as a ".dist" template.
 cp "${SRC}/pcre2_chartables.c.dist" "${OUTPUT_DIR}/pcre2_chartables.c"
 
-# Included-only data files: rename to .inc and patch their includer.
-for f in "${INCLUDED[@]}"; do
-  cp "${SRC}/${f}" "${OUTPUT_DIR}/${f}.inc"
+# Included-only data headers: copied verbatim. These are #included by a source
+# file (e.g. pcre2_tables.c includes pcre2_ucptables_inc.h) and never compiled
+# as standalone translation units, so the .h suffix already keeps the Go
+# toolchain from picking them up.
+log "copying ${#INCLUDED_HEADERS[@]} included headers"
+for f in "${INCLUDED_HEADERS[@]}"; do
+  cp "${SRC}/${f}" "${OUTPUT_DIR}/${f}"
 done
-# pcre2_tables.c pulls in pcre2_ucptables.c; point it at the .inc copy.
-sed -i.bak 's|#include "pcre2_ucptables.c"|#include "pcre2_ucptables.c.inc"|' \
-  "${OUTPUT_DIR}/pcre2_tables.c"
-rm -f "${OUTPUT_DIR}/pcre2_tables.c.bak"
 
 # Build configuration. Start from the upstream generic config and enable only
 # what the 8-bit interpreter needs. SUPPORT_JIT is intentionally left undefined.
@@ -202,7 +214,7 @@ GEN_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "  pcre2.h (from pcre2.h.generic)"
   echo "  pcre2_config.h (from config.h.generic, patched)"
   echo "included (not compiled standalone):"
-  for f in "${INCLUDED[@]}"; do echo "  ${f}.inc (from ${f})"; done
+  for f in "${INCLUDED_HEADERS[@]}"; do echo "  ${f}"; done
 } > "${OUTPUT_DIR}/upstream-version.txt"
 
 log "done -> ${OUTPUT_DIR}"

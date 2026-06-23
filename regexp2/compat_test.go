@@ -64,7 +64,7 @@ func TestCompatVarLookbehind(t *testing.T) {
 		{`(?<=ab{2,})c`, "abc", ""},
 		// 负向 lookbehind 无界.
 		{`(?<!\d+)X`, "aX", "X"},
-		// 有界变长(PCRE2 10.43 原生, compat 不介入)也应正常.
+		// 有界变长(PCRE2 10.47 原生, compat 不介入)也应正常.
 		{`(?<=ab?c)d`, "acd", "d"},
 		{`(?<=ab?c)d`, "abcd", "d"},
 		{`(?<=a{2,4})b`, "aaab", "b"},

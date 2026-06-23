@@ -11,7 +11,7 @@ trimmed **PCRE2 8-bit interpreter** compiled from vendored C source via cgo —
 
 - **Drop-in `regexp2` compatibility** — usually just change the import path.
 - **Faster, lower-allocation** — faster than `dlclark/regexp2` on every
-  benchmark (up to ~5.9x), zero-allocation boolean matching, and a batched
+  benchmark (up to ~9.6x), zero-allocation boolean matching, and a batched
   `FindAll` that beats Go's own `regexp` on massive small-match workloads (see
   [Performance](#performance)).
 - **ReDoS-safe by default** — bounded by the PCRE2 match/depth limits; a
@@ -138,7 +138,7 @@ raw PCRE2 rejects, so the common case "just works":
 
 | Construct | Example | Handling |
 |---|---|---|
-| Variable-length lookbehind | `(?<=a+)b`, `(?<="text":\s*")` | PCRE2 10.43 supports bounded variable-length lookbehind natively; unbounded quantifiers inside a lookbehind are tightened to `{n,512}` so they compile and match (>512 repetitions are not matched) |
+| Variable-length lookbehind | `(?<=a+)b`, `(?<="text":\s*")` | PCRE2 10.47 supports bounded variable-length lookbehind natively; unbounded quantifiers inside a lookbehind are tightened to `{n,512}` so they compile and match (>512 repetitions are not matched) |
 | Set shorthand beside `-` in a class | `[\d\w-_]`, `[a-\w]` | the `-` is treated as a literal (as .NET/RE2 do), avoiding "invalid range in character class" |
 
 ### Silently different (compiles, but behaves differently — audit these)
@@ -179,19 +179,21 @@ Go standard library `regexp` (RE2), shown where its syntax allows.
 ![Throughput vs dlclark/regexp2](assets/bench-speedup.png)
 
 The drop-in layer is faster than `dlclark/regexp2` on every benchmark, and the
-low-level byte API is faster still (1.2x–6.2x).
+low-level byte API is faster still (1.6x–9.6x). The cgo match path also got
+notably faster with the PCRE2 10.47 upgrade (boolean matching dropped from
+~1100 ns to ~680 ns while the pure-Go `dlclark` control was unchanged).
 
 | Scenario | dlclark | drop-in | low-level | speedup | drop-in alloc |
 |---|---|---|---|---|---|
-| Boolean match, short string | 6471 ns | 1099 ns | 1088 ns | **5.9x** | 0 B / 0 |
-| Boolean match, 100 KB input | 25.9 ms | 4.51 ms | 4.49 ms | **5.7x** | 0 B / 0 |
-| Match w/ backreference | 391 ns | 186 ns | 183 ns | **2.1x** | 0 B / 0 |
-| Backtracking-heavy, 32 KB | 20.4 ms | 11.2 ms | 11.1 ms | **1.8x** | 0 B / 0 |
-| Unicode `\p{Han}`, 8 KB | 15.6 µs | 12.2 µs | 4.65 µs | 1.3x | 0 B / 0 |
-| Find with 6 captures | 1129 ns | 908 ns | 677 ns | 1.2x | 752 B / 7 |
-| Compile (complex pattern) | 10.9 µs | ~3.0 µs | 2.95 µs | **3.7x** | 1.5 KB / 17 |
-| Find-all, 670 matches | 380 µs | 139 µs | 61 µs | **2.7x** (ll 6.2x) | 193 KB / 2004 |
-| Find-all, 30k matches | 6.29 ms | 5.38 ms | 2.94 ms | **1.2x** (ll 2.1x) | 7.8 MB / 90k |
+| Boolean match, short string | 6472 ns | 676 ns | 674 ns | **9.6x** | 0 B / 0 |
+| Boolean match, 100 KB input | 26.4 ms | 2.84 ms | 2.84 ms | **9.3x** | 0 B / 0 |
+| Match w/ backreference | 396 ns | 186 ns | 185 ns | **2.1x** | 0 B / 0 |
+| Backtracking-heavy, 32 KB | 20.0 ms | 10.9 ms | 11.0 ms | **1.8x** | 0 B / 0 |
+| Unicode `\p{Han}`, 8 KB | 15.2 µs | 12.2 µs | 4.95 µs | 1.2x | 0 B / 0 |
+| Find with 6 captures | 1072 ns | 984 ns | 690 ns | 1.1x | 752 B / 7 |
+| Compile (complex pattern) | 10.3 µs | ~3.2 µs | 3.16 µs | **3.3x** | 1.5 KB / 17 |
+| Find-all, 670 matches | 380 µs | 138 µs | 63 µs | **2.8x** (ll 6.0x) | 193 KB / 2004 |
+| Find-all, 30k matches | 6.06 ms | 5.24 ms | 2.88 ms | **1.2x** (ll 2.1x) | 7.8 MB / 90k |
 
 ![Match latency across scenarios](assets/bench-latency.png)
 
@@ -216,7 +218,9 @@ Two changes fixed it:
 
 The combined effect on 30,000 tiny matches over 30 KB: the low-level API went
 from **171 ms to 2.9 ms** (≈59x) and the drop-in layer from **170 ms to
-5.4 ms**, both now **faster than `dlclark` (6.3 ms) and Go's `regexp` (5.8 ms)**.
+5.2 ms**, both now **faster than `dlclark` (6.1 ms) and Go's `regexp` (5.5 ms)**.
+Per-match iteration also uses the official `pcre2_next_match()` helper added in
+PCRE2 10.47, replacing the previously hand-rolled empty-match advancement.
 
 ![Many small matches: before vs after](assets/bench-tiny-optimization.png)
 
@@ -247,9 +251,20 @@ python3 tools/benchviz/plot.py                          # regenerate assets/*.pn
 - **`dlclark/regexp2` parity:** 100% whole-match agreement over the 1585-input
   PCRE2 official `testoutput1` corpus, plus dedicated differential tests for
   replace, full iteration, and group access.
-- **PCRE2 10.42 ground truth:** match results agree on 761/761 (8-bit) and
-  1347/1347 (UTF) cases from PCRE2's own `testoutput2`/`testoutput4` corpora;
-  compile accept/reject agrees on 1080/1080 accepted and 286/286 rejected.
+- **PCRE2 10.47 ground truth:** match results agree on 929/931 (8-bit) and
+  1502/1504 (UTF) cases from PCRE2's own `testoutput2`/`testoutput4` corpora;
+  compile accept/reject agrees on 1258/1258 accepted and 385/388 rejected (the
+  handful of misses are boundary cases the corpus parser approximates, not engine
+  bugs).
+- **Per-version behaviour pins (`pcre2_1047_regression_test.go`):** every
+  behaviour-affecting changelog entry across 10.44–10.47 is asserted against the
+  authoritative `pcre2test` golden output for that release — the variable-length
+  lookbehind first-branch fix, `\X` ZWJ grapheme-cluster break, scan-substring
+  assertions `(*scs:)` / `(*scan_substring:)`, the `(*ACCEPT)`-inside-`(*scs:)`
+  CVE-2025-58050 memory-safety fix, the new 10.47 subroutine-returning-captures
+  `(?N(group,...))`, `pcre2_next_match` empty/`\K`-match iteration, UCD 16
+  properties, the raised 128-char group-name limit (boundary-tested at 128/129),
+  and a guard that the 10.47 named-group hash-table lookup stays O(1).
 - **JavaScript/Node:** ECMAScript `test262` and V8 lookbehind/named-group/
   Unicode-property cases, plus real-world ReDoS CVE safety.
 

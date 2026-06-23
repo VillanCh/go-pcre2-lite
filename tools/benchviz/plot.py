@@ -58,13 +58,15 @@ def fmt_time(ns):
 
 
 # ---- Measured data (ns/op) --------------------------------------------------
-# scenario -> {engine: ns/op}; None means not applicable for that engine.
+# Measured on darwin/arm64 (Apple M-series) against vendored PCRE2 10.47 with
+# `go test -bench -benchmem`. scenario -> {engine: ns/op}; None means not
+# applicable for that engine.
 LAT = {
-    "Boolean match\n(short)":        {"dl": 6471, "p2": 1099, "ll": 1088, "std": 732},
-    "Find with\ncaptures":           {"dl": 1129, "p2": 908,  "ll": 677,  "std": 496},
-    "Single match\n(100 KB)":        {"dl": 25924199, "p2": 4506796, "ll": 4485058, "std": 2955896},
-    "Find-all\n(670 matches)":       {"dl": 380462, "p2": 139116, "ll": 61247, "std": 100874},
-    "Find-all\n(30k matches)":       {"dl": 6290887, "p2": 5380964, "ll": 2939269, "std": 5807361},
+    "Boolean match\n(short)":        {"dl": 6472, "p2": 676,  "ll": 674,  "std": 716},
+    "Find with\ncaptures":           {"dl": 1072, "p2": 984,  "ll": 690,  "std": 489},
+    "Single match\n(100 KB)":        {"dl": 26400000, "p2": 2844000, "ll": 2840000, "std": 2926000},
+    "Find-all\n(670 matches)":       {"dl": 380181, "p2": 137899, "ll": 62859, "std": 98894},
+    "Find-all\n(30k matches)":       {"dl": 6058824, "p2": 5240747, "ll": 2875660, "std": 5495268},
 }
 
 ALLOCS = {
@@ -72,17 +74,19 @@ ALLOCS = {
     "Find-all\n(30k matches)":  {"dl": 150001, "p2": 90124, "ll": 142, "std": 30028},
 }
 
-# Before/after the batched FindAll + NO_UTF_CHECK optimization (ns/op).
+# Before/after the batched FindAll + NO_UTF_CHECK optimization (ns/op). The
+# "before" figures are the historical un-batched path; "after" are the current
+# PCRE2 10.47 measurements.
 TINY = {
     "Find-all\n670 matches\n(4 KB)": {
-        "p2_before": 680000, "p2_after": 139116,
-        "ll_before": 589000, "ll_after": 61247,
-        "dl": 380462, "std": 100874,
+        "p2_before": 680000, "p2_after": 137899,
+        "ll_before": 589000, "ll_after": 62859,
+        "dl": 380181, "std": 98894,
     },
     "Find-all\n30,000 matches\n(30 KB)": {
-        "p2_before": 170000000, "p2_after": 5380964,
-        "ll_before": 171000000, "ll_after": 2939269,
-        "dl": 6290887, "std": 5807361,
+        "p2_before": 170000000, "p2_after": 5240747,
+        "ll_before": 171000000, "ll_after": 2875660,
+        "dl": 6058824, "std": 5495268,
     },
 }
 

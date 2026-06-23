@@ -16,7 +16,7 @@
 #define P2L_STRINGIFY2(x) #x
 #define P2L_STRINGIFY(x) P2L_STRINGIFY2(x)
 
-/* Branch-length cap for variable-length lookbehind assertions. PCRE2 10.43
+/* Branch-length cap for variable-length lookbehind assertions. PCRE2 10.47
    defaults to 255; we raise it so realistic bounded lookbehinds compile. */
 #define P2L_MAX_VARLOOKBEHIND 65535u
 
@@ -93,6 +93,23 @@ static uint32_t translate_match_options(uint32_t options) {
     return out;
 }
 
+/* Inverse of translate_match_options: convert native PCRE2 match options back
+   into the wrapper's P2L_MOPT_* bitmask. Used to encode the cross-batch resume
+   token returned by p2l_match_all so the next call can reconstruct the exact
+   PCRE2 options (e.g. the PCRE2_NOTEMPTY_ATSTART produced by pcre2_next_match).
+   PCRE2_NO_UTF_CHECK is intentionally never round-tripped; it is a per-batch
+   optimization re-established by each call. */
+static uint32_t untranslate_match_options(uint32_t options) {
+    uint32_t out = 0;
+    if (options & PCRE2_ANCHORED)         out |= P2L_MOPT_ANCHORED;
+    if (options & PCRE2_NOTBOL)           out |= P2L_MOPT_NOTBOL;
+    if (options & PCRE2_NOTEOL)           out |= P2L_MOPT_NOTEOL;
+    if (options & PCRE2_NOTEMPTY)         out |= P2L_MOPT_NOTEMPTY;
+    if (options & PCRE2_NOTEMPTY_ATSTART) out |= P2L_MOPT_NOTEMPTY_ATSTART;
+    if (options & PCRE2_ENDANCHORED)      out |= P2L_MOPT_ENDANCHORED;
+    return out;
+}
+
 static int map_match_error(int rc, p2l_error *error) {
     fill_error(error, rc, 0);
     if (rc == PCRE2_ERROR_PARTIAL)            return P2L_ERR_PARTIAL;
@@ -124,7 +141,7 @@ p2l_regex *p2l_compile(const uint8_t *pattern, size_t pattern_len,
     const uint8_t *pat = (pattern == NULL) ? &empty : pattern;
 
     /* Raise the variable-length lookbehind branch-length cap (default 255 in
-       PCRE2 10.43) so that realistic bounded variable-length lookbehinds -- e.g.
+       PCRE2 10.47) so that realistic bounded variable-length lookbehinds -- e.g.
        (?<="text":\s{0,512}") -- compile. This widens compatibility with .NET /
        dlclark, which impose no such limit. The context is only needed during
        compilation and is freed immediately afterwards. */
@@ -298,19 +315,6 @@ done:
     return result;
 }
 
-/* Advance one code unit from pos, skipping UTF-8 continuation bytes when the
-   pattern is in UTF mode. Mirrors the Go-side empty-match advancement. */
-static size_t advance_one(const uint8_t *subject, size_t subject_len,
-                          size_t pos, int utf) {
-    size_t nb = pos + 1;
-    if (utf) {
-        while (nb < subject_len && (subject[nb] & 0xC0) == 0x80) {
-            nb++;
-        }
-    }
-    return nb;
-}
-
 int p2l_match_all(const p2l_regex *regex, const uint8_t *subject,
                   size_t subject_len, size_t start_offset, uint32_t in_options,
                   p2l_scratch *scratch, p2l_span *spans, size_t span_capacity,
@@ -362,8 +366,11 @@ int p2l_match_all(const p2l_regex *regex, const uint8_t *subject,
 
     const size_t stride = (size_t)regex->capture_count + 1;
     size_t count = 0;
-    size_t pos = start_offset;
-    uint32_t opts = in_options;
+    PCRE2_SIZE pos = start_offset;
+    /* mopts is kept in native PCRE2 option space. The first attempt uses the
+       caller's translated options; later attempts use the resume options that
+       pcre2_next_match() computes (0 or PCRE2_NOTEMPTY_ATSTART). */
+    uint32_t mopts = translate_match_options(in_options);
     int rc_more = 0; /* 0 = exhausted, 1 = buffer full (resume) */
 
     /* In UTF mode PCRE2 validates the whole subject on every pcre2_match call
@@ -380,31 +387,26 @@ int p2l_match_all(const p2l_regex *regex, const uint8_t *subject,
                 *out_next_start = pos;
             }
             if (out_next_options != NULL) {
-                *out_next_options = opts;
+                *out_next_options = untranslate_match_options(mopts);
             }
             rc_more = 1;
             break;
         }
 
-        uint32_t mopts = translate_match_options(opts);
+        uint32_t call_opts = mopts;
         if (utf && validated) {
-            mopts |= PCRE2_NO_UTF_CHECK;
+            call_opts |= PCRE2_NO_UTF_CHECK;
         }
         int rc = pcre2_match(regex->code, (PCRE2_SPTR)subj, subject_len, pos,
-                             mopts, md, regex->mcontext);
+                             call_opts, md, regex->mcontext);
         validated = 1; /* subject proven valid (or rejected) by the first call */
 
         if (rc == PCRE2_ERROR_NOMATCH) {
-            if (opts == 0) {
-                break; /* genuinely no more matches */
-            }
-            /* Empty-anchored retry failed: advance one code unit, plain search. */
-            pos = advance_one(subj, subject_len, pos, regex->utf);
-            opts = 0;
-            if (pos > subject_len) {
-                break;
-            }
-            continue;
+            /* pcre2_next_match() resumes empty matches with PCRE2_NOTEMPTY_ATSTART
+               but WITHOUT anchoring, so every pcre2_match call is a forward
+               search. A NOMATCH is therefore always genuine -- no further
+               matches exist -- and no manual bump-along is required. */
+            break;
         }
         if (rc < 0) {
             int mapped = map_match_error(rc, error);
@@ -425,15 +427,11 @@ int p2l_match_all(const p2l_regex *regex, const uint8_t *subject,
         }
         count++;
 
-        size_t s0 = (size_t)ov[0];
-        size_t e0 = (size_t)ov[1];
-        pos = e0;
-        opts = 0;
-        if (s0 == e0) { /* empty match: avoid an infinite loop at the same spot */
-            if (e0 >= subject_len) {
-                break;
-            }
-            opts = P2L_MOPT_NOTEMPTY_ATSTART | P2L_MOPT_ANCHORED;
+        /* Advance to the next match using the official PCRE2 10.47 iteration
+           helper. It encapsulates empty-match advancement and the rare
+           \K-in-lookaround case, returning FALSE when iteration is complete. */
+        if (!pcre2_next_match(md, &pos, &mopts)) {
+            break;
         }
     }
 

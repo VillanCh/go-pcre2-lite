@@ -43,7 +43,7 @@ type jsMatchCase struct {
 	groups  []string // expected groups 1..n; jsUndef means JS `undefined`
 }
 
-// jsCompatCases are Test262 / V8-documented patterns that PCRE2 10.43 fully
+// jsCompatCases are Test262 / V8-documented patterns that PCRE2 10.47 fully
 // supports. Each expected value is what V8/Node returns for the same call.
 var jsCompatCases = []jsMatchCase{
 	// --- Test262 RegExp/lookBehind/captures.js (fixed-length lookbehind) ------
@@ -91,7 +91,7 @@ var jsGlobalCases = []jsGlobalCase{
 }
 
 // jsVarLookbehindSupportedCases are Test262 variable-length lookbehind patterns
-// that JavaScript accepts. PCRE2 10.43 supports bounded variable-length
+// that JavaScript accepts. PCRE2 10.47 supports bounded variable-length
 // lookbehind natively, and the syntax-compatibility layer (compat.go) tightens
 // otherwise-unbounded quantifiers inside a lookbehind so they compile too. We
 // assert that they now compile AND produce the same first match as dlclark
@@ -215,7 +215,7 @@ func TestJSRegexCompatGlobal(t *testing.T) {
 }
 
 // TestJSVariableLookbehindSupported asserts that variable-length lookbehind now
-// compiles (PCRE2 10.43 native support + compat.go bounding) and yields the same
+// compiles (PCRE2 10.47 native support + compat.go bounding) and yields the same
 // first match as dlclark, the variable-length-lookbehind oracle.
 func TestJSVariableLookbehindSupported(t *testing.T) {
 	for _, c := range jsVarLookbehindSupportedCases {
@@ -266,7 +266,7 @@ func TestJSVariableLookbehindStillRejected(t *testing.T) {
 }
 
 // TestJSPropertyLongNameDivergence documents that JavaScript accepts long
-// General_Category property names like \p{Number}, whereas PCRE2 10.43 only
+// General_Category property names like \p{Number}, whereas PCRE2 10.47 only
 // accepts the short alias \p{N}. Migrated patterns must use the short form.
 func TestJSPropertyLongNameDivergence(t *testing.T) {
 	if _, err := p2.Compile(`\p{Number}`, 0); err == nil {
@@ -305,7 +305,7 @@ func TestJSLookbehindCaptureDivergence(t *testing.T) {
 }
 
 // jsBackrefLookbehindDivergence are Test262 patterns with a backreference inside
-// the lookbehind. PCRE2 10.43 COMPILES them but does NOT match where JavaScript
+// the lookbehind. PCRE2 10.47 COMPILES them but does NOT match where JavaScript
 // does (JS resolves the self-reference differently). We assert PCRE2's actual
 // no-match so the divergence is captured.
 var jsBackrefLookbehindDivergence = []struct {
@@ -345,7 +345,7 @@ func TestJSBackrefInLookbehindDivergence(t *testing.T) {
 // --- Security: real-world ReDoS from the JS ecosystem ----------------------
 //
 // We split the corpus by how PCRE2 actually defends against each pattern, as
-// measured against PCRE2 10.43 (see the per-group comments). This avoids giving
+// measured against PCRE2 10.47 (see the per-group comments). This avoids giving
 // a false sense of security: match_limit stops EXPONENTIAL backtracking dead,
 // but does NOT bound a POLYNOMIAL (quadratic) scan -- for that the only real
 // defense is capping input length.

@@ -19,7 +19,8 @@ are compared. The file's own recorded expectations are not used as an oracle
 ## pcre2_testoutput2.txt / pcre2_testoutput4.txt
 
 `testoutput2` (features, boundaries, compile diagnostics, 8-bit/non-UTF) and
-`testoutput4` (UTF and Unicode-property matching) from PCRE2 v10.42.
+`testoutput4` (UTF and Unicode-property matching) from PCRE2 v10.47, matching
+the vendored engine version (see `../internal/pcre2lite/upstream-version.txt`).
 
 Unlike `testoutput1`, these are used as an **oracle**: `../pcre2_official_test.go`
 parses the recorded compile accept/reject outcomes and per-subject match results

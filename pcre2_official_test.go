@@ -5,7 +5,7 @@ package pcre2lite_test
 // the upstream pcre2test tool recorded. Unlike corpus_pcre_test.go (which does a
 // dlclark-vs-pcre2-lite differential on PCRE2 v10.21 inputs), here we compare
 // against the recorded ground-truth output, and the vendored engine is the SAME
-// PCRE2 version (10.42) that produced these files -- so the only legitimate
+// PCRE2 version (10.47) that produced these files -- so the only legitimate
 // divergences come from the few features we intentionally trimmed (DFA, JIT,
 // serialization, callouts, locale tables) or from per-test newline/bsr overrides
 // which we conservatively skip.
