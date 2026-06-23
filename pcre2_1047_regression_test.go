@@ -44,7 +44,7 @@ import (
 //   - nil                    -> do not check this group
 //   - &unsetSentinel         -> group must be UNSET (non-participating)
 //   - any other *string      -> group must have participated and captured *that*
-//                               exact text ("" means it captured the empty string)
+//     exact text ("" means it captured the empty string)
 type gcase struct {
 	name        string
 	pattern     string
@@ -353,18 +353,18 @@ func TestRegression1047SubroutineCaptures(t *testing.T) {
 	// Golden from testoutput2 lines 23081-23090.
 	runGoldenCases(t, []gcase{
 		{
-			name: "subroutine-caps-match",
-			pattern: `(?1(2))#(?1(3))#(?1(4))#(?(DEFINE)((.)\2(.)\3(.)\4))`,
-			input: "aabbcc#ddeeff#gghhii!aabbcc#ddeeff#gghhii#",
+			name:      "subroutine-caps-match",
+			pattern:   `(?1(2))#(?1(3))#(?1(4))#(?(DEFINE)((.)\2(.)\3(.)\4))`,
+			input:     "aabbcc#ddeeff#gghhii!aabbcc#ddeeff#gghhii#",
 			wantWhole: "aabbcc#ddeeff#gghhii#",
 			// g1 is unset (the DEFINE group never captured); g2/3/4 hold the last
 			// capture returned by each subroutine call.
 			wantGroups: []*string{g("aabbcc#ddeeff#gghhii#"), gunset(), g("a"), g("e"), g("i")},
 		},
 		{
-			name: "subroutine-caps-nomatch",
+			name:    "subroutine-caps-nomatch",
 			pattern: `(?1(2))#(?1(3))#(?1(4))#(?(DEFINE)((.)\2(.)\3(.)\4))`,
-			input: "aabbcc#ddeeff#gghhii", wantNoMatch: true,
+			input:   "aabbcc#ddeeff#gghhii", wantNoMatch: true,
 		},
 	})
 }
@@ -451,10 +451,10 @@ func TestRegression1047ImprovedErrorOffsets(t *testing.T) {
 		pattern    string
 		wantSubstr string // a substring expected in the error message
 	}{
-		{`\xthing`, "after \\x"},           // 10.45 rule, but offset now precise
-		{`\x{ZZ}`, "non-hex"},              // offset points at the bad char
-		{`(?P<name`, "terminator"},         // unclosed name
-		{`(foo)(*scs:1)`, "parenthesis"},   // malformed scan-substring
+		{`\xthing`, "after \\x"},         // 10.45 rule, but offset now precise
+		{`\x{ZZ}`, "non-hex"},            // offset points at the bad char
+		{`(?P<name`, "terminator"},       // unclosed name
+		{`(foo)(*scs:1)`, "parenthesis"}, // malformed scan-substring
 	}
 	for _, tc := range cases {
 		_, err := lib.Compile(tc.pattern, lib.CompileOptions{})

@@ -316,12 +316,20 @@ func TestDeepNestingMatchNoStackOverflow(t *testing.T) {
 	defer re.Close()
 
 	input := []byte(strings.Repeat("a", 5000) + "b")
+	// This test guards against a stack overflow / crash, NOT against slowness:
+	// the input is a *legitimate* (non-adversarial) deep-nesting match that the
+	// PCRE2 interpreter resolves by walking the full default 10M-step limit, so
+	// it is expected to take a few seconds. PCRE2 10.47 is noticeably slower
+	// than 10.43 on this path, and the race detector roughly doubles the cost,
+	// so we use a dedicated, generous deadline instead of the 8s ReDoS watchdog
+	// (which exists to catch genuine hangs on adversarial inputs).
+	const deepNestingWatchdog = 40 * time.Second
 	var matchErr error
-	finished := withDeadline(redosWatchdog, func() {
+	finished := withDeadline(deepNestingWatchdog, func() {
 		_, matchErr = re.Match(input)
 	})
 	if !finished {
-		t.Fatalf("deep-nesting match did not finish within %v", redosWatchdog)
+		t.Fatalf("deep-nesting match did not finish within %v", deepNestingWatchdog)
 	}
 	if matchErr != nil && !isLimitErr(matchErr) {
 		t.Errorf("unexpected error: %v", matchErr)
