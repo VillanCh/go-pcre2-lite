@@ -67,7 +67,7 @@ type Regexp struct {
 // Compile parses a regular expression and returns a Regexp.
 func Compile(expr string, opt RegexOptions) (*Regexp, error) {
 	co := optionsToCompile(opt)
-	re, err := lib.Compile(expr, co)
+	re, err := compileWithCompat(expr, co)
 	if err != nil {
 		return nil, err
 	}
@@ -77,6 +77,24 @@ func Compile(expr string, opt RegexOptions) (*Regexp, error) {
 		options:      opt,
 		re:           re,
 	}, nil
+}
+
+// compileWithCompat compiles expr, and on failure retries once with a set of
+// PCRE2 syntax-compatibility rewrites (see compat.go) that accept a few
+// constructs .NET/RE2 tolerate but PCRE2 rejects. The rewritten pattern is only
+// used if it compiles; otherwise the ORIGINAL error is returned, so patterns
+// that already compile are never altered.
+func compileWithCompat(expr string, co lib.CompileOptions) (*lib.Regexp, error) {
+	re, err := lib.Compile(expr, co)
+	if err == nil {
+		return re, nil
+	}
+	if fixed, changed := rewriteForPCRE2Compat(expr); changed {
+		if re2, err2 := lib.Compile(fixed, co); err2 == nil {
+			return re2, nil
+		}
+	}
+	return nil, err
 }
 
 // MustCompile is like Compile but panics if the expression cannot be parsed.
@@ -125,7 +143,7 @@ func (re *Regexp) SetMatchLimits(matchLimit, depthLimit uint32) error {
 	co := optionsToCompile(re.options)
 	co.MatchLimit = matchLimit
 	co.DepthLimit = depthLimit
-	newRe, err := lib.Compile(re.pattern, co)
+	newRe, err := compileWithCompat(re.pattern, co)
 	if err != nil {
 		return err
 	}

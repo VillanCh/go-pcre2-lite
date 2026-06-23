@@ -130,16 +130,25 @@ and against real-world ReDoS CVEs. What ports cleanly and what does not:
 **Ports identically to JS:**
 
 - Fixed-length lookbehind with captures: `(?<=(\w(\w)))def`, `(?<=(bc)|(cd)).`.
+- Variable-length lookbehind, e.g. `(?<=[ab]+)x`, `(?<="text":\s*")`: PCRE2 10.43
+  supports bounded variable-length lookbehind natively, and the compat layer
+  (`compat.go`) tightens otherwise-unbounded quantifiers (`*` `+` `{n,}`) inside a
+  lookbehind to a bounded form (`{0,512}` etc.) so they compile and match. The
+  only difference from JS/.NET is that more than 512 repetitions inside the
+  lookbehind are not matched (a generous, configurable bound).
 - Named groups and `\k<name>` backreferences: `(?<year>\d{4})-(?<month>\d{2})`.
 - Unicode property escapes via the **short** names: `\p{N}`, `\p{L}`, and binary
   properties `\p{Alphabetic}`, `\p{Math}` (the compat layer enables UTF+UCP).
+- Character classes where a set shorthand neighbours `-`, e.g. `[\d\w-_]`: the
+  compat layer treats the `-` as a literal (as .NET/RE2 do), avoiding PCRE2's
+  "invalid range in character class" error.
 - Global iteration over successive matches (`FindNextMatch`).
 
 **Documented JS-vs-PCRE2 divergences** (each has a dedicated test):
 
-| JS construct | JS behaviour | PCRE2 10.42 behaviour |
+| JS construct | JS behaviour | PCRE2 10.43 behaviour |
 |---|---|---|
-| Variable-length lookbehind, e.g. `(?<=[ab]+)x` | accepted | **compile error** (lookbehind must be fixed length) |
+| Lookbehind whose length depends on a backreference, e.g. `(?<=a(.\2)b(\1))` | accepted | **compile error** (length not boundable) |
 | Long `General_Category` name `\p{Number}` | accepted | **compile error** — use the short alias `\p{N}` |
 | Quantified capture in lookbehind `(?<=(\w){3})def` | group 1 = `"a"` (matched right-to-left) | group 1 = `"c"` (whole match `"def"` agrees) |
 | Backreference inside lookbehind `(?<=\1(\w))d` | matches | compiles but **does not match** |

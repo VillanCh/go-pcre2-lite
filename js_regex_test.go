@@ -43,7 +43,7 @@ type jsMatchCase struct {
 	groups  []string // expected groups 1..n; jsUndef means JS `undefined`
 }
 
-// jsCompatCases are Test262 / V8-documented patterns that PCRE2 10.42 fully
+// jsCompatCases are Test262 / V8-documented patterns that PCRE2 10.43 fully
 // supports. Each expected value is what V8/Node returns for the same call.
 var jsCompatCases = []jsMatchCase{
 	// --- Test262 RegExp/lookBehind/captures.js (fixed-length lookbehind) ------
@@ -90,16 +90,29 @@ var jsGlobalCases = []jsGlobalCase{
 	{"t262-lb-global-9", `(?<=[b-e])\w{2}`, 0, "abcdef", []string{"cd", "ef"}},
 }
 
-// jsVarLookbehindCases are Test262 lookbehind patterns that JavaScript accepts
-// (V8 allows variable-length lookbehind) but PCRE2 10.42 rejects, because its
-// lookbehind must be fixed-length. We assert the compile error so the boundary
-// is captured and stays documented; see MIGRATION.md.
-var jsVarLookbehindCases = []struct {
+// jsVarLookbehindSupportedCases are Test262 variable-length lookbehind patterns
+// that JavaScript accepts. PCRE2 10.43 supports bounded variable-length
+// lookbehind natively, and the syntax-compatibility layer (compat.go) tightens
+// otherwise-unbounded quantifiers inside a lookbehind so they compile too. We
+// assert that they now compile AND produce the same first match as dlclark
+// (the .NET-style oracle that already supports variable-length lookbehind).
+var jsVarLookbehindSupportedCases = []struct {
+	name    string
+	pattern string
+	input   string
+}{
+	{"t262-lb-captures-6-var", `(?<=([ab]{1,2})\D|(abc))\w`, "abxc abc abcd"},
+	{"t262-lb-captures-7-var", `\D(?<=([ab]+))(\w)`, "xaab9"},
+}
+
+// jsVarLookbehindStillRejectedCases are variable-length lookbehind patterns whose
+// length cannot be bounded at compile time (here the length depends on a
+// backreference), so PCRE2 still rejects them. This stays documented as a
+// boundary; see MIGRATION.md.
+var jsVarLookbehindStillRejectedCases = []struct {
 	name    string
 	pattern string
 }{
-	{"t262-lb-captures-6-var", `(?<=([ab]{1,2})\D|(abc))\w`},
-	{"t262-lb-captures-7-var", `\D(?<=([ab]+))(\w)`},
 	{"t262-lb-mutual-1", `(?<=a(.\2)b(\1)).{4}`},
 }
 
@@ -201,18 +214,50 @@ func TestJSRegexCompatGlobal(t *testing.T) {
 	}
 }
 
-// TestJSVariableLookbehindUnsupported documents that JavaScript's variable-length
-// lookbehind is rejected by PCRE2 10.42, because its lookbehind must be
-// fixed-length. This is an intentional, version-bound limitation, not a silent
-// mismatch.
-func TestJSVariableLookbehindUnsupported(t *testing.T) {
-	for _, c := range jsVarLookbehindCases {
+// TestJSVariableLookbehindSupported asserts that variable-length lookbehind now
+// compiles (PCRE2 10.43 native support + compat.go bounding) and yields the same
+// first match as dlclark, the variable-length-lookbehind oracle.
+func TestJSVariableLookbehindSupported(t *testing.T) {
+	for _, c := range jsVarLookbehindSupportedCases {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
 			re, err := p2.Compile(c.pattern, 0)
-			if err == nil {
-				_ = re
-				t.Errorf("expected PCRE2 to reject variable-length lookbehind %q, but it compiled", c.pattern)
+			if err != nil {
+				t.Fatalf("expected variable-length lookbehind %q to compile, got: %v", c.pattern, err)
+			}
+			m, err := re.FindStringMatch(c.input)
+			if err != nil {
+				t.Fatalf("FindStringMatch: %v", err)
+			}
+			got := ""
+			if m != nil {
+				got = m.String()
+			}
+			dre, derr := dl.Compile(c.pattern, 0)
+			if derr != nil {
+				t.Fatalf("dlclark oracle failed to compile %q: %v", c.pattern, derr)
+			}
+			dm, _ := dre.FindStringMatch(c.input)
+			want := ""
+			if dm != nil {
+				want = dm.String()
+			}
+			if got != want {
+				t.Errorf("pattern %q on %q: got %q, dlclark oracle %q", c.pattern, c.input, got, want)
+			}
+		})
+	}
+}
+
+// TestJSVariableLookbehindStillRejected documents lookbehind whose length cannot
+// be bounded at compile time (length depends on a backreference) and is still
+// rejected by PCRE2.
+func TestJSVariableLookbehindStillRejected(t *testing.T) {
+	for _, c := range jsVarLookbehindStillRejectedCases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := p2.Compile(c.pattern, 0); err == nil {
+				t.Errorf("expected PCRE2 to reject unbounded lookbehind %q, but it compiled", c.pattern)
 			} else {
 				t.Logf("rejected as expected: %v", err)
 			}
@@ -221,7 +266,7 @@ func TestJSVariableLookbehindUnsupported(t *testing.T) {
 }
 
 // TestJSPropertyLongNameDivergence documents that JavaScript accepts long
-// General_Category property names like \p{Number}, whereas PCRE2 10.42 only
+// General_Category property names like \p{Number}, whereas PCRE2 10.43 only
 // accepts the short alias \p{N}. Migrated patterns must use the short form.
 func TestJSPropertyLongNameDivergence(t *testing.T) {
 	if _, err := p2.Compile(`\p{Number}`, 0); err == nil {
@@ -260,7 +305,7 @@ func TestJSLookbehindCaptureDivergence(t *testing.T) {
 }
 
 // jsBackrefLookbehindDivergence are Test262 patterns with a backreference inside
-// the lookbehind. PCRE2 10.42 COMPILES them but does NOT match where JavaScript
+// the lookbehind. PCRE2 10.43 COMPILES them but does NOT match where JavaScript
 // does (JS resolves the self-reference differently). We assert PCRE2's actual
 // no-match so the divergence is captured.
 var jsBackrefLookbehindDivergence = []struct {
@@ -300,7 +345,7 @@ func TestJSBackrefInLookbehindDivergence(t *testing.T) {
 // --- Security: real-world ReDoS from the JS ecosystem ----------------------
 //
 // We split the corpus by how PCRE2 actually defends against each pattern, as
-// measured against PCRE2 10.42 (see the per-group comments). This avoids giving
+// measured against PCRE2 10.43 (see the per-group comments). This avoids giving
 // a false sense of security: match_limit stops EXPONENTIAL backtracking dead,
 // but does NOT bound a POLYNOMIAL (quadratic) scan -- for that the only real
 // defense is capping input length.

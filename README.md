@@ -128,8 +128,18 @@ buckets; the **silent** ones are the dangerous category.
 | Construct | Example | Note |
 |---|---|---|
 | .NET balancing groups | `(?<open>\()[^()]*(?<-open>\))` | .NET-only stack feature; PCRE2 has no equivalent |
-| Variable-length lookbehind | `(?<=a+)b`, `(?<=[ab]+)x` | PCRE2 lookbehind must be **fixed length** |
+| Lookbehind length depending on a backreference | `(?<=a(.\2)b(\1))` | length cannot be bounded at compile time |
 | Long `\p{...}` category names | `\p{Number}`, `\p{IsGreek}` | use the short alias `\p{N}`, `\p{Greek}` (also rejected by `dlclark`) |
+
+### Accepted via the compatibility layer (`regexp2` package)
+
+The drop-in `regexp2` package rewrites a few constructs that .NET/RE2 tolerate but
+raw PCRE2 rejects, so the common case "just works":
+
+| Construct | Example | Handling |
+|---|---|---|
+| Variable-length lookbehind | `(?<=a+)b`, `(?<="text":\s*")` | PCRE2 10.43 supports bounded variable-length lookbehind natively; unbounded quantifiers inside a lookbehind are tightened to `{n,512}` so they compile and match (>512 repetitions are not matched) |
+| Set shorthand beside `-` in a class | `[\d\w-_]`, `[a-\w]` | the `-` is treated as a literal (as .NET/RE2 do), avoiding "invalid range in character class" |
 
 ### Silently different (compiles, but behaves differently — audit these)
 

@@ -16,6 +16,10 @@
 #define P2L_STRINGIFY2(x) #x
 #define P2L_STRINGIFY(x) P2L_STRINGIFY2(x)
 
+/* Branch-length cap for variable-length lookbehind assertions. PCRE2 10.43
+   defaults to 255; we raise it so realistic bounded lookbehinds compile. */
+#define P2L_MAX_VARLOOKBEHIND 65535u
+
 struct p2l_regex {
     pcre2_code          *code;
     pcre2_match_context *mcontext;   /* read-only during matching; may be NULL */
@@ -119,11 +123,24 @@ p2l_regex *p2l_compile(const uint8_t *pattern, size_t pattern_len,
     static const uint8_t empty = 0;
     const uint8_t *pat = (pattern == NULL) ? &empty : pattern;
 
+    /* Raise the variable-length lookbehind branch-length cap (default 255 in
+       PCRE2 10.43) so that realistic bounded variable-length lookbehinds -- e.g.
+       (?<="text":\s{0,512}") -- compile. This widens compatibility with .NET /
+       dlclark, which impose no such limit. The context is only needed during
+       compilation and is freed immediately afterwards. */
+    pcre2_compile_context *ccontext = pcre2_compile_context_create(NULL);
+    if (ccontext != NULL) {
+        pcre2_set_max_varlookbehind(ccontext, P2L_MAX_VARLOOKBEHIND);
+    }
+
     int errcode = 0;
     PCRE2_SIZE erroffset = 0;
     pcre2_code *code = pcre2_compile((PCRE2_SPTR)pat, pattern_len,
                                      translate_compile_options(options),
-                                     &errcode, &erroffset, NULL);
+                                     &errcode, &erroffset, ccontext);
+    if (ccontext != NULL) {
+        pcre2_compile_context_free(ccontext);
+    }
     if (code == NULL) {
         fill_error(error, errcode, erroffset);
         return NULL;

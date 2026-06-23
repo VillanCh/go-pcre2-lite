@@ -25,6 +25,17 @@ while IFS= read -r -d '' f; do
     status=1
     continue
   fi
+  # upstream-version.txt records a "generated:" wall-clock timestamp that differs
+  # on every run; ignore that single volatile line when comparing.
+  if [ "${name}" = "upstream-version.txt" ]; then
+    if ! diff -q \
+      <(grep -v '^generated:' "${f}") \
+      <(grep -v '^generated:' "${COMMITTED}/${name}") >/dev/null; then
+      echo "DRIFT: ${name}"
+      status=1
+    fi
+    continue
+  fi
   if ! diff -q "${f}" "${COMMITTED}/${name}" >/dev/null; then
     echo "DRIFT: ${name}"
     status=1

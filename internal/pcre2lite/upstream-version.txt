@@ -1,14 +1,15 @@
 PCRE2 upstream vendored by tools/generate-pcre2lite/generate.sh
-version: 10.42
-tarball: pcre2-10.42.tar.gz
-url: https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.42/pcre2-10.42.tar.gz
-sha256: c33b418e3b936ee3153de2c61cc638e7e4fe3156022a5c77d0711bcbb9d64f1f
-generated: 2026-06-22T12:30:29Z
+version: 10.43
+tarball: pcre2-10.43.tar.gz
+url: https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.43/pcre2-10.43.tar.gz
+sha256: 889d16be5abb8d05400b33c25e151638b8d4bac0e2d9c76e9d6923118ae8a34e
+generated: 2026-06-23T00:33:35Z
 jit: permanently-disabled (SUPPORT_JIT never defined)
 widths: 8-bit only
 
 sources:
   pcre2_auto_possess.c
+  pcre2_chkdint.c
   pcre2_compile.c
   pcre2_config.c
   pcre2_context.c

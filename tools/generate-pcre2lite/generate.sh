@@ -20,10 +20,10 @@
 
 set -euo pipefail
 
-PCRE2_VERSION="10.42"
+PCRE2_VERSION="10.43"
 PCRE2_TARBALL="pcre2-${PCRE2_VERSION}.tar.gz"
 PCRE2_URL="https://github.com/PCRE2Project/pcre2/releases/download/pcre2-${PCRE2_VERSION}/${PCRE2_TARBALL}"
-PCRE2_SHA256="c33b418e3b936ee3153de2c61cc638e7e4fe3156022a5c77d0711bcbb9d64f1f"
+PCRE2_SHA256="889d16be5abb8d05400b33c25e151638b8d4bac0e2d9c76e9d6923118ae8a34e"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODULE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -34,6 +34,7 @@ CACHE_DIR="${PCRE2LITE_CACHE_DIR:-${TMPDIR:-/tmp}/pcre2lite-cache}"
 # JIT, DFA, convert, serialize, POSIX and the command line tools are excluded.
 SOURCES=(
   pcre2_auto_possess.c
+  pcre2_chkdint.c
   pcre2_compile.c
   pcre2_config.c
   pcre2_context.c
