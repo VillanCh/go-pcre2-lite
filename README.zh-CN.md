@@ -28,6 +28,9 @@ go get github.com/VillanCh/go-pcre2-lite
 需要 `CGO_ENABLED=1` 和一套 C 工具链（PCRE2 的 C 源码随包 vendoring 并一起编译，
 代码中从不引用 JIT）。
 
+生产模块不依赖 `github.com/dlclark/regexp2`。行为对照测试被隔离在独立的
+`differential` 嵌套模块中，不会进入下游项目的模块依赖图。
+
 ## 使用
 
 ### 作为 `regexp2` 的 drop-in 替换（面向 rune，推荐）
