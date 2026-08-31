@@ -17,6 +17,7 @@ import "C"
 
 import (
 	"runtime"
+	"runtime/cgo"
 	"sync"
 	"unsafe"
 )
@@ -46,6 +47,73 @@ type Regexp struct {
 	nameToNumber map[string]int
 	numberToName map[int]string
 	orderedNames []string
+}
+
+// CalloutBlock is the mutable zero-width match state exposed by an explicit
+// PCRE2 callout. Subject and capture offsets are valid only until the callback
+// returns. Returning zero continues matching; a positive value rejects the
+// current path and lets PCRE2 backtrack.
+type CalloutBlock struct {
+	Number          int
+	CaptureTop      int
+	CurrentPosition int
+	Subject         []byte
+	offsets         []C.size_t
+}
+
+// Capture returns the current byte span for group number. The boolean is false
+// when the group is unset or outside the compiled pattern's capture range.
+func (b *CalloutBlock) Capture(number int) (Span, bool) {
+	if number < 0 || 2*number+1 >= len(b.offsets) {
+		return Span{}, false
+	}
+	start, end := b.offsets[2*number], b.offsets[2*number+1]
+	if start == cUnset || end == cUnset {
+		return Span{Start: SpanUnset, End: SpanUnset}, false
+	}
+	return Span{Start: int(start), End: int(end)}, true
+}
+
+// SetCapture replaces a capture span in PCRE2's live backtracking frame. Use
+// SpanUnset for both offsets to mark a group as non-participating.
+func (b *CalloutBlock) SetCapture(number, start, end int) bool {
+	if number <= 0 || 2*number+1 >= len(b.offsets) {
+		return false
+	}
+	if start == SpanUnset && end == SpanUnset {
+		b.offsets[2*number], b.offsets[2*number+1] = cUnset, cUnset
+		return true
+	}
+	if start < 0 || end < start || end > len(b.Subject) {
+		return false
+	}
+	b.offsets[2*number], b.offsets[2*number+1] = C.size_t(start), C.size_t(end)
+	return true
+}
+
+// CalloutFunc handles an explicit (?C<number>) item in a pattern.
+type CalloutFunc func(*CalloutBlock) int
+
+//export p2l_go_callout
+func p2l_go_callout(handle C.uintptr_t, raw *C.p2l_callout_block) (result C.int) {
+	defer func() {
+		if recover() != nil {
+			result = 1
+		}
+	}()
+	callback := cgo.Handle(handle).Value().(CalloutFunc)
+	var subject []byte
+	if raw.subject_length > 0 {
+		subject = unsafe.Slice((*byte)(unsafe.Pointer(raw.subject)), int(raw.subject_length))
+	}
+	offsets := unsafe.Slice((*C.size_t)(unsafe.Pointer(raw.offsets)), 2*int(raw.capture_capacity))
+	return C.int(callback(&CalloutBlock{
+		Number:          int(raw.number),
+		CaptureTop:      int(raw.capture_top),
+		CurrentPosition: int(raw.current_position),
+		Subject:         subject,
+		offsets:         offsets,
+	}))
 }
 
 // Compile compiles pattern with the given options.
@@ -149,6 +217,9 @@ func (o CompileOptions) cmask() C.uint32_t {
 	if o.NeverUCP {
 		m |= C.uint32_t(C.P2L_OPT_NEVER_UCP)
 	}
+	if o.MatchUnsetBackref {
+		m |= C.uint32_t(C.P2L_OPT_MATCH_UNSET_BACKREF)
+	}
 	return m
 }
 
@@ -183,6 +254,30 @@ func (r *Regexp) FindFrom(input []byte, start int, opts MatchOption) (*Match, er
 	}
 	spans := make([]C.p2l_span, r.groupCount)
 	rc, err := r.runMatch(input, start, opts, spans)
+	if err != nil {
+		return nil, err
+	}
+	if rc == 0 {
+		return nil, nil
+	}
+	return &Match{Input: input, Groups: spansToGo(spans)}, nil
+}
+
+// FindFromCallout is FindFrom with an explicit-callout handler. It is intended
+// for narrowly scoped compatibility layers; ordinary patterns should use Find
+// or FindFrom and retain the zero-callback fast path.
+func (r *Regexp) FindFromCallout(input []byte, start int, opts MatchOption, callback CalloutFunc) (*Match, error) {
+	if callback == nil {
+		return r.FindFrom(input, start, opts)
+	}
+	if start < 0 {
+		start = 0
+	}
+	if start > len(input) {
+		return nil, nil
+	}
+	spans := make([]C.p2l_span, r.groupCount)
+	rc, err := r.runMatchCallout(input, start, opts, spans, callback)
 	if err != nil {
 		return nil, err
 	}
@@ -392,6 +487,34 @@ func (r *Regexp) runMatch(subject []byte, start int, opts MatchOption, spans []C
 	}
 	r.pool.put(ms)
 	return int(rc), err
+}
+
+func (r *Regexp) runMatchCallout(subject []byte, start int, opts MatchOption, spans []C.p2l_span, callback CalloutFunc) (int, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.closed {
+		return 0, ErrClosed
+	}
+	ms := r.pool.get()
+	if ms == nil {
+		return 0, ErrNoMemory
+	}
+	defer r.pool.put(ms)
+
+	var spanPtr *C.p2l_span
+	if len(spans) > 0 {
+		spanPtr = &spans[0]
+	}
+	handle := cgo.NewHandle(callback)
+	defer handle.Delete()
+	rc := C.p2l_match_callout(r.ptr, bytePtr(subject), C.size_t(len(subject)),
+		C.size_t(start), C.uint32_t(opts), ms.c, C.uintptr_t(handle),
+		spanPtr, C.size_t(len(spans)), &ms.spanCnt, &ms.cerr)
+	runtime.KeepAlive(subject)
+	if int(rc) < 0 {
+		return int(rc), translateMatchError(int(rc), &ms.cerr)
+	}
+	return int(rc), nil
 }
 
 func translateMatchError(rc int, cerr *C.p2l_error) error {

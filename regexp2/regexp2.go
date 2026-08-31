@@ -66,32 +66,64 @@ type Regexp struct {
 
 	pattern        string
 	backendPattern string
+	ecmaPattern    string
 	options        RegexOptions
 	re             *lib.Regexp
+	lookbehinds    []*ecmaLookbehindPlan
+	// ECMAScript permits IdentifierName capture names (including $, Unicode,
+	// and escaped code points), while PCRE2 restricts names to ASCII word
+	// characters. These maps preserve the public names after rewriting them to
+	// safe backend-only names.
+	ecmaGroupNames   map[int]string
+	ecmaGroupNumbers map[string]int
 }
 
 // Compile parses a regular expression and returns a Regexp.
 func Compile(expr string, opt RegexOptions) (*Regexp, error) {
 	co := optionsToCompile(opt)
 	backendExpr := expr
+	var ecmaNames map[int]string
 	if opt&ECMAScript != 0 {
 		if opt&Unicode != 0 {
 			if err := validateECMAScriptUnicodeEscapes(expr); err != nil {
 				return nil, err
 			}
 		}
-		backendExpr, _ = rewriteECMAScriptPattern(expr, opt&Singleline != 0, opt&Unicode != 0)
+		var err error
+		backendExpr, ecmaNames, err = rewriteECMAScriptGroupNames(expr, opt&Unicode != 0)
+		if err != nil {
+			return nil, err
+		}
+		backendExpr, _ = rewriteECMAScriptPattern(backendExpr, opt&Singleline != 0, opt&Unicode != 0)
+	}
+	ecmaPattern := backendExpr
+	var lookbehinds []*ecmaLookbehindPlan
+	if opt&ECMAScript != 0 {
+		var err error
+		backendExpr, lookbehinds, err = compileECMAScriptLookbehinds(backendExpr, co)
+		if err != nil {
+			return nil, err
+		}
 	}
 	re, err := compileWithCompat(backendExpr, co)
 	if err != nil {
+		closeECMAScriptLookbehinds(lookbehinds)
 		return nil, err
 	}
+	groupNumbers := make(map[string]int, len(ecmaNames))
+	for number, name := range ecmaNames {
+		groupNumbers[name] = number
+	}
 	return &Regexp{
-		MatchTimeout:   DefaultMatchTimeout,
-		pattern:        expr,
-		backendPattern: backendExpr,
-		options:        opt,
-		re:             re,
+		MatchTimeout:     DefaultMatchTimeout,
+		pattern:          expr,
+		backendPattern:   backendExpr,
+		ecmaPattern:      ecmaPattern,
+		options:          opt,
+		re:               re,
+		lookbehinds:      lookbehinds,
+		ecmaGroupNames:   ecmaNames,
+		ecmaGroupNumbers: groupNumbers,
 	}, nil
 }
 
@@ -128,6 +160,9 @@ func optionsToCompile(opt RegexOptions) lib.CompileOptions {
 		// rune-oriented semantics of regexp2.
 		UTF: true,
 	}
+	if opt&ECMAScript != 0 {
+		co.MatchUnsetBackref = true
+	}
 	if opt&IgnoreCase != 0 {
 		co.Caseless = true
 	}
@@ -159,15 +194,31 @@ func (re *Regexp) SetMatchLimits(matchLimit, depthLimit uint32) error {
 	co := optionsToCompile(re.options)
 	co.MatchLimit = matchLimit
 	co.DepthLimit = depthLimit
-	newRe, err := compileWithCompat(re.backendPattern, co)
+	backendPattern := re.backendPattern
+	var lookbehinds []*ecmaLookbehindPlan
+	var err error
+	if len(re.lookbehinds) > 0 {
+		backendPattern, lookbehinds, err = compileECMAScriptLookbehinds(re.ecmaPattern, co)
+		if err != nil {
+			return err
+		}
+	}
+	newRe, err := compileWithCompat(backendPattern, co)
 	if err != nil {
+		closeECMAScriptLookbehinds(lookbehinds)
 		return err
 	}
 	old := re.re
+	oldLookbehinds := re.lookbehinds
 	re.re = newRe
+	re.backendPattern = backendPattern
+	if lookbehinds != nil {
+		re.lookbehinds = lookbehinds
+	}
 	if old != nil {
 		old.Close()
 	}
+	closeECMAScriptLookbehinds(oldLookbehinds)
 	return nil
 }
 
@@ -213,6 +264,10 @@ func (re *Regexp) Debug() bool {
 
 // MatchString returns true if the string matches the regex.
 func (re *Regexp) MatchString(s string) (bool, error) {
+	if len(re.lookbehinds) > 0 {
+		m, err := re.FindStringMatch(s)
+		return m != nil, err
+	}
 	return re.re.Match(subjectBytes(s))
 }
 
@@ -220,6 +275,10 @@ func (re *Regexp) MatchString(s string) (bool, error) {
 func (re *Regexp) MatchRunes(r []rune) (bool, error) {
 	if containsUnsupportedRune(r) {
 		return false, ErrUnsupportedRune
+	}
+	if len(re.lookbehinds) > 0 {
+		m, err := re.FindRunesMatch(r)
+		return m != nil, err
 	}
 	return re.re.Match([]byte(string(r)))
 }
@@ -313,7 +372,7 @@ func (re *Regexp) FindNextMatch(m *Match) (*Match, error) {
 // over an old Match -- falls back to a single Find and re-arms the iterator, so
 // behaviour is identical to the unbatched path while the hot loop stays fast.
 func (re *Regexp) findCore(ms *matchState, startByte int, prevEmpty bool) (*Match, error) {
-	if !prevEmpty && ms.iterActive && startByte == ms.iterNext {
+	if len(re.lookbehinds) == 0 && !prevEmpty && ms.iterActive && startByte == ms.iterNext {
 		return ms.iterServe(re)
 	}
 	ms.iterActive = false
@@ -332,7 +391,13 @@ func (re *Regexp) findCore(ms *matchState, startByte int, prevEmpty bool) (*Matc
 	if startByte > len(ms.subject) {
 		return nil, nil
 	}
-	lm, err := re.re.Find(ms.subject, startByte)
+	var lm *lib.Match
+	var err error
+	if len(re.lookbehinds) > 0 {
+		lm, err = re.findWithECMAScriptLookbehinds(ms.subject, startByte)
+	} else {
+		lm, err = re.re.Find(ms.subject, startByte)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -343,10 +408,44 @@ func (re *Regexp) findCore(ms *matchState, startByte int, prevEmpty bool) (*Matc
 	// Arm the iterator for the next sequential call, but only after a non-empty
 	// match (so the next call is a plain search from the match end).
 	g0 := lm.Groups[0]
-	if g0.End > g0.Start {
+	if len(re.lookbehinds) == 0 && g0.End > g0.Start {
 		ms.armIter(re, g0.End)
 	}
 	return m, nil
+}
+
+func (re *Regexp) findWithECMAScriptLookbehinds(subject []byte, start int) (*lib.Match, error) {
+	var callbackErr error
+	// Reverse once per public search, not once per candidate/backtracking
+	// callout. This keeps the compatibility path linear in subject size before
+	// PCRE2's normal matching cost.
+	reverseSubject := reverseUTF8Bytes(subject)
+	match, err := re.re.FindFromCallout(subject, start, 0, func(block *lib.CalloutBlock) int {
+		if block.Number < 1 || block.Number > len(re.lookbehinds) {
+			return 1
+		}
+		result, evalErr := re.lookbehinds[block.Number-1].evaluate(block, reverseSubject)
+		if evalErr != nil && callbackErr == nil {
+			callbackErr = evalErr
+			return 1
+		}
+		return result
+	})
+	if err != nil {
+		return nil, err
+	}
+	if callbackErr != nil {
+		return nil, callbackErr
+	}
+	return match, nil
+}
+
+func closeECMAScriptLookbehinds(plans []*ecmaLookbehindPlan) {
+	for _, plan := range plans {
+		if plan.static != nil {
+			plan.static.Close()
+		}
+	}
 }
 
 // GetGroupNames returns the set of names used for capture groups, with unnamed
@@ -373,6 +472,9 @@ func (re *Regexp) GetGroupNumbers() []int {
 // GroupNameFromNumber returns the name for a group number, or its decimal
 // representation for an unnamed group, or "" if out of range.
 func (re *Regexp) GroupNameFromNumber(i int) string {
+	if name, ok := re.ecmaGroupNames[i]; ok {
+		return name
+	}
 	if name, ok := re.re.NumberedGroupName(i); ok {
 		return name
 	}
@@ -384,6 +486,9 @@ func (re *Regexp) GroupNameFromNumber(i int) string {
 
 // GroupNumberFromName returns the group number for a name, or -1 if unknown.
 func (re *Regexp) GroupNumberFromName(name string) int {
+	if n, ok := re.ecmaGroupNumbers[name]; ok {
+		return n
+	}
 	if n, ok := re.re.NamedGroupNumber(name); ok {
 		return n
 	}

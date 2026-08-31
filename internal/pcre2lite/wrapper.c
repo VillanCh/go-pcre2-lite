@@ -28,11 +28,18 @@ struct p2l_regex {
     uint32_t             name_entry_size;
     PCRE2_SPTR           name_table;      /* points into code, valid until free */
     int                  utf;             /* nonzero when compiled with PCRE2_UTF */
+    uint32_t             match_limit;
+    uint32_t             depth_limit;
 };
 
 struct p2l_scratch {
     pcre2_match_data *md;
 };
+
+typedef struct {
+    size_t capture_capacity;
+    uintptr_t handle;
+} p2l_bridge_data;
 
 static void clear_error(p2l_error *error) {
     if (error != NULL) {
@@ -79,6 +86,7 @@ static uint32_t translate_compile_options(uint32_t options) {
     if (options & P2L_OPT_ALLOW_EMPTY_CLASS) out |= PCRE2_ALLOW_EMPTY_CLASS;
     if (options & P2L_OPT_DUPNAMES)          out |= PCRE2_DUPNAMES;
     if (options & P2L_OPT_NEVER_UCP)         out |= PCRE2_NEVER_UCP;
+    if (options & P2L_OPT_MATCH_UNSET_BACKREF) out |= PCRE2_MATCH_UNSET_BACKREF;
     return out;
 }
 
@@ -181,6 +189,8 @@ p2l_regex *p2l_compile(const uint8_t *pattern, size_t pattern_len,
     pcre2_pattern_info(code, PCRE2_INFO_NAMEENTRYSIZE, &r->name_entry_size);
     pcre2_pattern_info(code, PCRE2_INFO_NAMETABLE, &r->name_table);
     r->utf = (translate_compile_options(options) & PCRE2_UTF) ? 1 : 0;
+    r->match_limit = match_limit;
+    r->depth_limit = depth_limit;
 
     if (match_limit > 0 || depth_limit > 0) {
         r->mcontext = pcre2_match_context_create(NULL);
@@ -244,10 +254,29 @@ void p2l_scratch_free(p2l_scratch *scratch) {
     free(scratch);
 }
 
-int p2l_match(const p2l_regex *regex, const uint8_t *subject, size_t subject_len,
-              size_t start_offset, uint32_t options, p2l_scratch *scratch,
-              p2l_span *spans, size_t span_capacity, size_t *span_count,
-              p2l_error *error) {
+static int bridge_callout(pcre2_callout_block *block, void *data) {
+    p2l_callout_block stable;
+    stable.number = block->callout_number;
+    stable.capture_top = block->capture_top;
+    stable.capture_capacity = 0; /* overwritten below */
+    stable.current_position = (size_t)block->current_position;
+    stable.subject = (const uint8_t *)block->subject;
+    stable.subject_length = (size_t)block->subject_length;
+    stable.offsets = (size_t *)block->offset_vector;
+
+    /* The capture capacity is supplied immediately before the handle in the
+       tiny per-call context below. */
+    p2l_bridge_data *bridge = (p2l_bridge_data *)data;
+    stable.capture_capacity = bridge->capture_capacity;
+    return p2l_go_callout(bridge->handle, &stable);
+}
+
+static int p2l_match_impl(const p2l_regex *regex, const uint8_t *subject,
+                          size_t subject_len, size_t start_offset,
+                          uint32_t options, p2l_scratch *scratch,
+                          uintptr_t callout_handle, p2l_span *spans,
+                          size_t span_capacity, size_t *span_count,
+                          p2l_error *error) {
     clear_error(error);
     if (span_count != NULL) {
         *span_count = 0;
@@ -280,9 +309,30 @@ int p2l_match(const p2l_regex *regex, const uint8_t *subject, size_t subject_len
         md = temp;
     }
 
+    pcre2_match_context *callout_context = NULL;
+    pcre2_match_context *mcontext = regex->mcontext;
+    p2l_bridge_data bridge;
+    if (callout_handle != 0) {
+        callout_context = pcre2_match_context_create(NULL);
+        if (callout_context == NULL) {
+            if (temp != NULL) pcre2_match_data_free(temp);
+            return P2L_ERR_NOMEMORY;
+        }
+        if (regex->match_limit > 0) {
+            pcre2_set_match_limit(callout_context, regex->match_limit);
+        }
+        if (regex->depth_limit > 0) {
+            pcre2_set_depth_limit(callout_context, regex->depth_limit);
+        }
+        bridge.capture_capacity = (size_t)regex->capture_count + 1;
+        bridge.handle = callout_handle;
+        pcre2_set_callout(callout_context, bridge_callout, &bridge);
+        mcontext = callout_context;
+    }
+
     int rc = pcre2_match(regex->code, (PCRE2_SPTR)subj, subject_len,
                          start_offset, translate_match_options(options),
-                         md, regex->mcontext);
+                         md, mcontext);
 
     int result;
     if (rc >= 0) {
@@ -309,10 +359,31 @@ int p2l_match(const p2l_regex *regex, const uint8_t *subject, size_t subject_len
     }
 
 done:
+    if (callout_context != NULL) {
+        pcre2_match_context_free(callout_context);
+    }
     if (temp != NULL) {
         pcre2_match_data_free(temp);
     }
     return result;
+}
+
+int p2l_match(const p2l_regex *regex, const uint8_t *subject, size_t subject_len,
+              size_t start_offset, uint32_t options, p2l_scratch *scratch,
+              p2l_span *spans, size_t span_capacity, size_t *span_count,
+              p2l_error *error) {
+    return p2l_match_impl(regex, subject, subject_len, start_offset, options,
+                          scratch, 0, spans, span_capacity, span_count, error);
+}
+
+int p2l_match_callout(const p2l_regex *regex, const uint8_t *subject,
+                      size_t subject_len, size_t start_offset, uint32_t options,
+                      p2l_scratch *scratch, uintptr_t handle,
+                      p2l_span *spans, size_t span_capacity,
+                      size_t *span_count, p2l_error *error) {
+    return p2l_match_impl(regex, subject, subject_len, start_offset, options,
+                          scratch, handle, spans, span_capacity, span_count,
+                          error);
 }
 
 int p2l_match_all(const p2l_regex *regex, const uint8_t *subject,

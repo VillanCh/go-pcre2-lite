@@ -2,6 +2,8 @@ package regexp2
 
 import (
 	"errors"
+	"reflect"
+	"sync"
 	"testing"
 )
 
@@ -145,6 +147,178 @@ func TestECMAScriptLegacyDecimalEscape(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestECMAScriptUnsetBackreferencesMatchEmpty(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		input   string
+	}{
+		{name: "numeric forward", pattern: `\1(A)`, input: "A"},
+		{name: "numeric unmatched branch", pattern: `(A|(B))\2C`, input: "AC"},
+		{name: "named forward", pattern: `\k<x>(?<x>A)`, input: "A"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			re, err := Compile(test.pattern, ECMAScript)
+			if err != nil {
+				t.Fatal(err)
+			}
+			matched, err := re.MatchString(test.input)
+			if err != nil || !matched {
+				t.Fatalf("MatchString(%q) = %v, err=%v", test.input, matched, err)
+			}
+		})
+	}
+}
+
+func TestECMAScriptLegacyUnknownNamedReferenceIsIdentityEscape(t *testing.T) {
+	re, err := Compile(`^\k<missing>$`, ECMAScript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matched, err := re.MatchString("k<missing>"); err != nil || !matched {
+		t.Fatalf("legacy identity escape: matched=%v err=%v", matched, err)
+	}
+	if _, err := Compile(`\k<missing>`, ECMAScript|Unicode); err == nil {
+		t.Fatal("Unicode mode must reject an unknown named reference")
+	}
+}
+
+func TestECMAScriptIdentifierNameCaptures(t *testing.T) {
+	const astral = "𝓑𝓻𝓸𝔀𝓷"
+	re, err := Compile(`^(?<$>a)(?<π>b)(?<\u{1d4d1}\u{1d4fb}\u{1d4f8}\u{1d500}\u{1d4f7}>c)\k<$>$`, ECMAScript|Unicode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := re.FindStringMatch("abca")
+	if err != nil || m == nil {
+		t.Fatalf("match=%v err=%v", m, err)
+	}
+	for name, want := range map[string]string{"$": "a", "π": "b", astral: "c"} {
+		group := m.GroupByName(name)
+		if group == nil || group.String() != want {
+			t.Errorf("group %q = %v, want %q", name, group, want)
+		}
+	}
+	if got := re.GroupNameFromNumber(3); got != astral {
+		t.Fatalf("group 3 name = %q, want %q", got, astral)
+	}
+	replaced, err := re.Replace("abca", `${$}-${π}-${𝓑𝓻𝓸𝔀𝓷}`, -1, -1)
+	if err != nil || replaced != "a-b-c" {
+		t.Fatalf("Replace = %q, err=%v", replaced, err)
+	}
+}
+
+func TestECMAScriptRejectsInvalidCaptureNames(t *testing.T) {
+	for _, pattern := range []string{
+		`(?<>a)`,
+		`(?<1a>a)`,
+		`(?<a-b>a)`,
+		`(?<a!>a)`,
+		`(?<\uD800>a)`,
+		`(?<\u{DFFF}>a)`,
+	} {
+		if _, err := Compile(pattern, ECMAScript|Unicode); err == nil {
+			t.Errorf("Compile(%q) unexpectedly succeeded", pattern)
+		}
+	}
+}
+
+func TestECMAScriptRejectsUnknownNamedReferenceWhenNamesExist(t *testing.T) {
+	if _, err := Compile(`(?<present>a)\k<missing>`, ECMAScript); err == nil {
+		t.Fatal("expected an unknown named-reference error")
+	}
+}
+
+func TestECMAScriptLookbehindDirectionAndCaptures(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		input   string
+		want    []string
+		options RegexOptions
+	}{
+		{name: "repeated capture", pattern: `(?<=(\w){3})def`, input: "abcdef", want: []string{"def", "a"}},
+		{name: "ordered variable alternatives", pattern: `.*(?<=(..|...|....))(.*)`, input: "xabcd", want: []string{"xabcd", "cd", ""}},
+		{name: "forward backreference", pattern: `(?<=\1(\w))d`, input: "abcCd", want: []string{"d", "C"}, options: IgnoreCase},
+		{name: "greedy capture before backreference", pattern: `(?<=(\w+)\1)c`, input: "ababc", want: []string{"c", "abab"}},
+		{name: "external capture reference", pattern: `(.)(?<=(\1\1))`, input: "abb", want: []string{"b", "b", "bb"}},
+		{name: "mutual references", pattern: `(?<=a(.\2)b(\1)).{4}`, input: "aabcacbc", want: []string{"cacb", "a", ""}},
+		{name: "outer quantifier backtracks into lookbehind", pattern: `^faaao?(?<=^f[oa]+(?=o))`, input: "faaao", want: []string{"faaa"}},
+		{name: "multiline start anchor", pattern: `(?<=^[a-c]{3})def`, input: "xyz\nabcdef", want: []string{"def"}, options: Multiline},
+		{name: "word boundary sees right context", pattern: `(?<=\b)[d-f]{3}`, input: "abc def", want: []string{"def"}},
+		{name: "nested lookahead", pattern: `(?<=ab(?=c)\wd)\w\w`, input: "abcdef", want: []string{"ef"}},
+		{name: "nested lookbehind", pattern: `(?<=a(?=([bc]{2}(?<!a{2}))d)\w{3})\w\w`, input: "abcdef", want: []string{"ef", "bc"}},
+		{name: "multiple assertions", pattern: `(?<=a)b(?<=ab)c`, input: "abc", want: []string{"bc"}},
+		{name: "sliced subject does not expose prefix", pattern: `(?=(abcdefghijklmn))(?<=\1)a`, input: "abcdefghijklmn", want: nil},
+		{name: "negative assertion clears capture", pattern: `(?<!(\d){3})f`, input: "abcdef", want: []string{"f", "<unset>"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			re, err := Compile(test.pattern, ECMAScript|test.options)
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", test.pattern, err)
+			}
+			m, err := re.FindStringMatch(test.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			if m != nil {
+				for _, group := range m.Groups() {
+					if len(group.Captures) == 0 {
+						got = append(got, "<unset>")
+					} else {
+						got = append(got, group.String())
+					}
+				}
+			}
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("got %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestECMAScriptNamedLookbehindCapture(t *testing.T) {
+	re, err := Compile(`(?<=(?<a>\w)+)f`, ECMAScript|Unicode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := re.FindStringMatch("abcdef")
+	if err != nil || m == nil {
+		t.Fatalf("match=%v err=%v", m, err)
+	}
+	if group := m.GroupByName("a"); group == nil || group.String() != "a" {
+		t.Fatalf("named group = %v, want a", group)
+	}
+}
+
+func TestECMAScriptLookbehindConcurrentAndLimits(t *testing.T) {
+	re, err := Compile(`(?<=(\w){3})def`, ECMAScript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := re.SetMatchLimits(100000, 100000); err != nil {
+		t.Fatal(err)
+	}
+	var wait sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for j := 0; j < 100; j++ {
+				m, matchErr := re.FindStringMatch("abcdef")
+				if matchErr != nil || m == nil || m.GroupByNumber(1).String() != "a" {
+					t.Errorf("match=%v err=%v", m, matchErr)
+					return
+				}
+			}
+		}()
+	}
+	wait.Wait()
 }
 
 func TestECMAScriptSetEscapeRangeEndpoint(t *testing.T) {

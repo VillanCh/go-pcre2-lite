@@ -248,6 +248,25 @@ func TestConcurrentMatch(t *testing.T) {
 	wg.Wait()
 }
 
+func TestCalloutCanSetCaptureForLaterBackreference(t *testing.T) {
+	re := mustCompile(t, `()(?C1)\1`, CompileOptions{UTF: true})
+	m, err := re.FindFromCallout([]byte("a"), 0, 0, func(block *CalloutBlock) int {
+		if block.Number != 1 || block.CurrentPosition != 0 {
+			return 1
+		}
+		if !block.SetCapture(1, 0, 1) {
+			t.Fatal("SetCapture failed")
+		}
+		return 0
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m == nil || m.GroupString(0) != "a" || m.GroupString(1) != "a" {
+		t.Fatalf("unexpected match: %#v", m)
+	}
+}
+
 func TestMatchOptionParity(t *testing.T) {
 	cases := []struct {
 		got  MatchOption

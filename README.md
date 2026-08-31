@@ -132,7 +132,7 @@ buckets; the **silent** ones are the dangerous category.
 | Construct | Example | Note |
 |---|---|---|
 | .NET balancing groups | `(?<open>\()[^()]*(?<-open>\))` | .NET-only stack feature; PCRE2 has no equivalent |
-| Lookbehind length depending on a backreference | `(?<=a(.\2)b(\1))` | length cannot be bounded at compile time |
+| Lookbehind length depending on a backreference without `ECMAScript` mode | `(?<=a(.\2)b(\1))` | raw PCRE2 cannot bound it; `ECMAScript` mode handles it with the compatibility executor |
 | Long `\p{...}` category names | `\p{Number}`, `\p{IsGreek}` | use the short alias `\p{N}`, `\p{Greek}` (also rejected by `dlclark`) |
 
 ### Accepted via the compatibility layer (`regexp2` package)
@@ -142,19 +142,22 @@ raw PCRE2 rejects, so the common case "just works":
 
 | Construct | Example | Handling |
 |---|---|---|
-| Variable-length lookbehind | `(?<=a+)b`, `(?<="text":\s*")` | PCRE2 10.47 supports bounded variable-length lookbehind natively; unbounded quantifiers inside a lookbehind are tightened to `{n,512}` so they compile and match (>512 repetitions are not matched) |
+| ECMAScript lookbehind | `(?<=a+)b`, `(?<=\1(\w))d`, `(?<=a(.\2)b(\1))` | in `ECMAScript` mode, the main match and reversed assertion are both executed by PCRE2; this preserves JavaScript's right-to-left captures, alternatives, nested assertions, and backreferences without a 512-character cap |
+| Non-ECMAScript variable lookbehind | `(?<=a+)b`, `(?<="text":\s*")` | the .NET-compat path retains the existing `{n,512}` bound for otherwise-unbounded quantifiers |
 | Set shorthand beside `-` in a class | `[\d\w-_]`, `[a-\w]` | the `-` is treated as a literal (as .NET/RE2 do), avoiding "invalid range in character class" |
 | ECMAScript whitespace / dot | `\s`, `\S`, `.`, `[\Sx]` | exact JavaScript WhiteSpace + LineTerminator semantics, including U+2028/U+2029 and BOM |
 | ECMAScript empty classes | `[]`, `[^]` | never-match / match-any-character semantics, including line terminators |
 | ECMAScript escapes | `\x0`, `\u0065`, `\u{65}` | legacy identity escapes and Unicode code-point escapes are translated to PCRE2 equivalents |
+| ECMAScript unset references | `\1(A)`, `(A|(B))\2` | forward and non-participating backreferences match the empty string |
+| ECMAScript capture names | `(?<$>a)`, `(?<π>b)`, escaped astral names | names are validated as IdentifierNames, mapped to safe PCRE2 names, and restored by the public Group API |
 
 ### Silently different (compiles, but behaves differently — audit these)
 
 | Construct | Example | `dlclark` (.NET) | `go-pcre2-lite` (PCRE2) |
 |---|---|---|---|
 | .NET character-class subtraction | `[a-z-[aeiou]]` | "set minus": matches `b`, not `e` | parsed as the class `[a-z\-\[aeiou]` followed by a literal `]`; `b` alone does **not** match |
-| Quantified capture in lookbehind | `(?<=(\w){3})def` | group 1 = `"a"` | group 1 = `"c"` (whole match agrees) |
-| Backreference inside lookbehind | `(?<=\1(\w))d` | matches | compiles but does **not** match |
+| Quantified capture in lookbehind without `ECMAScript` mode | `(?<=(\w){3})def` | group 1 = `"a"` | raw PCRE2 semantics return group 1 = `"c"`; use `ECMAScript` for JavaScript semantics |
+| Backreference inside lookbehind without `ECMAScript` mode | `(?<=\1(\w))d` | matches | raw PCRE2 semantics diverge; use `ECMAScript` |
 
 ### Supported here, but NOT by `dlclark/regexp2` (bonus PCRE2 power)
 
@@ -167,10 +170,10 @@ Patterns relying on these are *not* portable back to `regexp2`.
 PCRE2's 8-bit UTF mode cannot represent isolated UTF-16 surrogate code units
 (`U+D800`-`U+DFFF`). The rune-oriented APIs therefore return the exported
 `ErrUnsupportedRune` instead of silently converting such input to U+FFFD.
-JavaScript runtimes such as Goja should use PCRE2 for compatible fallback
-patterns and route a pattern containing lone-surrogate escapes, or an input
-that returns `ErrUnsupportedRune`, to a UTF-16-aware engine. This is a narrow
-semantic fallback; removing it completely is not ECMAScript-correct.
+JavaScript runtimes such as Goja must explicitly handle a pattern containing
+lone-surrogate escapes, or an input that returns `ErrUnsupportedRune`. A
+runtime can reject it or use a reversible reserved-code-point mapping while
+preserving UTF-16 indexes; silently converting it to U+FFFD is incorrect.
 
 ## Safety: catastrophic backtracking is bounded
 

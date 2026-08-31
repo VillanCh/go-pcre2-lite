@@ -143,13 +143,19 @@ and against real-world ReDoS CVEs. What ports cleanly and what does not:
 **Ports identically to JS:**
 
 - Fixed-length lookbehind with captures: `(?<=(\w(\w)))def`, `(?<=(bc)|(cd)).`.
-- Variable-length lookbehind, e.g. `(?<=[ab]+)x`, `(?<="text":\s*")`: PCRE2 10.47
-  supports bounded variable-length lookbehind natively, and the compat layer
-  (`compat.go`) tightens otherwise-unbounded quantifiers (`*` `+` `{n,}`) inside a
-  lookbehind to a bounded form (`{0,512}` etc.) so they compile and match. The
-  only difference from JS/.NET is that more than 512 repetitions inside the
-  lookbehind are not matched (a generous, configurable bound).
+- ECMAScript lookbehind, including unbounded quantifiers, right-to-left
+  captures, ordered variable-length alternatives, nested assertions, and
+  internal/external/mutual backreferences. With the `ECMAScript` option the
+  outer pattern remains a PCRE2 match and each lookbehind is a PCRE2 callout
+  backed by an anchored PCRE2 match over the reversed subject. There is no
+  512-character cap on this path. The non-ECMAScript .NET-compat path retains
+  the older `{n,512}` fallback for otherwise-unbounded lookbehind quantifiers.
 - Named groups and `\k<name>` backreferences: `(?<year>\d{4})-(?<month>\d{2})`.
+- ECMAScript IdentifierName captures such as `(?<$>a)`, `(?<π>b)`, and escaped
+  astral names. The compatibility layer validates the JavaScript name, maps it
+  to an ASCII-only backend name, and restores the original public group name.
+- Forward and non-participating ECMAScript backreferences match the empty
+  string, including `\1(A)`, `(A|(B))\2`, and named forward references.
 - Unicode property escapes via the **short** names: `\p{N}`, `\p{L}`, and binary
   properties `\p{Alphabetic}`, `\p{Math}` (the compat layer enables UTF+UCP).
 - Character classes where a set shorthand neighbours `-`, e.g. `[\d\w-_]`: the
@@ -159,14 +165,16 @@ and against real-world ReDoS CVEs. What ports cleanly and what does not:
   legacy identity escapes, `\uXXXX`, and Unicode-mode `\u{...}` escapes.
 - Global iteration over successive matches (`FindNextMatch`).
 
-**Documented JS-vs-PCRE2 divergences** (each has a dedicated test):
+**Remaining JavaScript portability differences** (each has a dedicated test):
 
 | JS construct | JS behaviour | PCRE2 10.47 behaviour |
 |---|---|---|
-| Lookbehind whose length depends on a backreference, e.g. `(?<=a(.\2)b(\1))` | accepted | **compile error** (length not boundable) |
 | Long `General_Category` name `\p{Number}` | accepted | **compile error** — use the short alias `\p{N}` |
-| Quantified capture in lookbehind `(?<=(\w){3})def` | group 1 = `"a"` (matched right-to-left) | group 1 = `"c"` (whole match `"def"` agrees) |
-| Backreference inside lookbehind `(?<=\1(\w))d` | matches | compiles but **does not match** |
+
+The three former PCRE2 divergences around backreference-dependent lookbehind,
+quantified capture direction, and forward references inside lookbehind are now
+handled by the `ECMAScript` compatibility executor. Raw PCRE2/non-ECMAScript
+mode still follows native PCRE2 semantics.
 
 **ReDoS / security:** every real-world JS evil regex (moment.js
 CVE-2022-31129, the Cloudflare-2019 rule, CWE-1333, the classic catastrophic
