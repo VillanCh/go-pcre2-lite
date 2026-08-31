@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf16"
+	"unicode/utf8"
 )
 
 // 本文件实现一组"语法兼容兜底"(syntax compatibility fallback): 某些正则在 .NET(dlclark)
@@ -27,6 +30,240 @@ const varLookbehindCap = 512
 // set used by the \s and \S character class escapes. In particular it includes
 // the Unicode space separators and BOM, while excluding U+0085 and U+200B.
 const ecmaWhitespaceClassBody = `\x09-\x0d\x20\x{00a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}`
+
+type ecmaNamedGroup struct {
+	start, end int
+	number     int
+	name       string
+}
+
+// rewriteECMAScriptGroupNames bridges a grammar difference between
+// ECMAScript and PCRE2. JavaScript capture names are IdentifierNames, so names
+// such as "$", "π", and escaped astral code points are valid. PCRE2 accepts a
+// much narrower ASCII name grammar. Every JavaScript name is therefore
+// rewritten to a stable backend-only name (g<number>), and the original names
+// are returned for the public Group API.
+//
+// Annex B also treats \k<name> as an identity escape in legacy mode when the
+// complete pattern contains no capture with that name. Such references are
+// emitted as literal code points so PCRE2 does not reject them.
+func rewriteECMAScriptGroupNames(expr string, unicodeMode bool) (string, map[int]string, error) {
+	groups, err := collectECMAScriptNamedGroups(expr)
+	if err != nil {
+		return "", nil, err
+	}
+	byStart := make(map[int]ecmaNamedGroup, len(groups))
+	byName := make(map[string]ecmaNamedGroup, len(groups))
+	names := make(map[int]string, len(groups))
+	for _, group := range groups {
+		byStart[group.start] = group
+		if _, exists := byName[group.name]; !exists {
+			byName[group.name] = group
+		}
+		names[group.number] = group.name
+	}
+
+	var out strings.Builder
+	out.Grow(len(expr))
+	changed := false
+	for i := 0; i < len(expr); {
+		if group, ok := byStart[i]; ok {
+			out.WriteString("(?<g")
+			out.WriteString(strconv.Itoa(group.number))
+			out.WriteByte('>')
+			i = group.end + 1
+			changed = true
+			continue
+		}
+		if expr[i] == '[' {
+			if end := findECMAScriptClassEnd(expr, i); end >= 0 {
+				out.WriteString(expr[i : end+1])
+				i = end + 1
+				continue
+			}
+		}
+		if expr[i] == '\\' && i+3 < len(expr) && expr[i+1] == 'k' && expr[i+2] == '<' {
+			if relEnd := strings.IndexByte(expr[i+3:], '>'); relEnd >= 0 {
+				end := i + 3 + relEnd
+				name, valid := decodeECMAScriptGroupName(expr[i+3 : end])
+				if !valid {
+					return "", nil, fmt.Errorf("invalid ECMAScript named backreference at byte %d", i)
+				}
+				if group, ok := byName[name]; ok {
+					out.WriteString(`\k<g`)
+					out.WriteString(strconv.Itoa(group.number))
+					out.WriteByte('>')
+					changed = true
+					i = end + 1
+					continue
+				}
+				if !unicodeMode && len(groups) == 0 {
+					writePCRE2LiteralRunes(&out, "k<"+name+">")
+					changed = true
+					i = end + 1
+					continue
+				}
+				return "", nil, fmt.Errorf("unknown ECMAScript capture group name %q", name)
+			}
+		}
+		if expr[i] == '\\' && i+1 < len(expr) {
+			out.WriteString(expr[i : i+2])
+			i += 2
+			continue
+		}
+		out.WriteByte(expr[i])
+		i++
+	}
+	if !changed {
+		return expr, names, nil
+	}
+	return out.String(), names, nil
+}
+
+func collectECMAScriptNamedGroups(expr string) ([]ecmaNamedGroup, error) {
+	var groups []ecmaNamedGroup
+	seenNames := make(map[string]struct{})
+	captureNumber := 0
+	for i := 0; i < len(expr); {
+		switch expr[i] {
+		case '\\':
+			i += 2
+		case '[':
+			end := findECMAScriptClassEnd(expr, i)
+			if end < 0 {
+				return groups, nil
+			}
+			i = end + 1
+		case '(':
+			if i+1 >= len(expr) || expr[i+1] != '?' {
+				captureNumber++
+				i++
+				continue
+			}
+			if i+3 < len(expr) && expr[i+2] == '<' && expr[i+3] != '=' && expr[i+3] != '!' {
+				if relEnd := strings.IndexByte(expr[i+3:], '>'); relEnd >= 0 {
+					end := i + 3 + relEnd
+					name, valid := decodeECMAScriptGroupName(expr[i+3 : end])
+					if !valid || !isECMAScriptGroupName(name) {
+						return nil, fmt.Errorf("invalid ECMAScript capture group name at byte %d", i+3)
+					}
+					if _, exists := seenNames[name]; exists {
+						return nil, fmt.Errorf("duplicate ECMAScript capture group name %q", name)
+					}
+					seenNames[name] = struct{}{}
+					captureNumber++
+					groups = append(groups, ecmaNamedGroup{
+						start:  i,
+						end:    end,
+						number: captureNumber,
+						name:   name,
+					})
+					i = end + 1
+					continue
+				}
+			}
+			i++
+		default:
+			i++
+		}
+	}
+	return groups, nil
+}
+
+func decodeECMAScriptGroupName(raw string) (string, bool) {
+	var out strings.Builder
+	for i := 0; i < len(raw); {
+		if raw[i] != '\\' || i+1 >= len(raw) || raw[i+1] != 'u' {
+			r, size := utf8.DecodeRuneInString(raw[i:])
+			if r == utf8.RuneError && size == 1 {
+				return "", false
+			}
+			out.WriteRune(r)
+			i += size
+			continue
+		}
+		if i+2 < len(raw) && raw[i+2] == '{' {
+			if relEnd := strings.IndexByte(raw[i+3:], '}'); relEnd >= 0 {
+				end := i + 3 + relEnd
+				digits := raw[i+3 : end]
+				if len(digits) > 0 && len(digits) <= 6 && isHexBytes(digits) {
+					value, err := strconv.ParseUint(digits, 16, 32)
+					if err != nil || value > 0x10ffff || isUTF16Surrogate(value) {
+						return "", false
+					}
+					out.WriteRune(rune(value))
+					i = end + 1
+					continue
+				}
+			}
+			return "", false
+		}
+		if i+6 <= len(raw) && isHexBytes(raw[i+2:i+6]) {
+			value, _ := strconv.ParseUint(raw[i+2:i+6], 16, 16)
+			if value >= 0xd800 && value <= 0xdbff {
+				if i+12 > len(raw) || raw[i+6:i+8] != `\u` || !isHexBytes(raw[i+8:i+12]) {
+					return "", false
+				}
+				low, _ := strconv.ParseUint(raw[i+8:i+12], 16, 16)
+				if low < 0xdc00 || low > 0xdfff {
+					return "", false
+				}
+				out.WriteRune(utf16.DecodeRune(rune(value), rune(low)))
+				i += 12
+				continue
+			}
+			if value >= 0xdc00 && value <= 0xdfff {
+				return "", false
+			}
+			out.WriteRune(rune(value))
+			i += 6
+			continue
+		}
+		return "", false
+	}
+	return out.String(), true
+}
+
+func isECMAScriptGroupName(name string) bool {
+	first := true
+	for _, r := range name {
+		if first {
+			if !isECMAScriptIdentifierStart(r) {
+				return false
+			}
+			first = false
+			continue
+		}
+		if !isECMAScriptIdentifierContinue(r) {
+			return false
+		}
+	}
+	return !first
+}
+
+func isECMAScriptIdentifierStart(r rune) bool {
+	return r == '$' || r == '_' || unicode.IsLetter(r) || unicode.Is(unicode.Nl, r) ||
+		unicode.Is(unicode.Other_ID_Start, r)
+}
+
+func isECMAScriptIdentifierContinue(r rune) bool {
+	return isECMAScriptIdentifierStart(r) || r == '\u200c' || r == '\u200d' ||
+		unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Mc, r) || unicode.IsDigit(r) ||
+		unicode.Is(unicode.Pc, r) || unicode.Is(unicode.Other_ID_Continue, r)
+}
+
+func writePCRE2LiteralRunes(out *strings.Builder, value string) {
+	const hex = "0123456789abcdef"
+	for _, r := range value {
+		if r <= 0xff {
+			out.WriteString(`\x`)
+			out.WriteByte(hex[byte(r)>>4])
+			out.WriteByte(hex[byte(r)&0x0f])
+		} else {
+			out.WriteRune(r)
+		}
+	}
+}
 
 func validateECMAScriptUnicodeEscapes(expr string) error {
 	for i := 0; i < len(expr); {

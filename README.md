@@ -147,6 +147,8 @@ raw PCRE2 rejects, so the common case "just works":
 | ECMAScript whitespace / dot | `\s`, `\S`, `.`, `[\Sx]` | exact JavaScript WhiteSpace + LineTerminator semantics, including U+2028/U+2029 and BOM |
 | ECMAScript empty classes | `[]`, `[^]` | never-match / match-any-character semantics, including line terminators |
 | ECMAScript escapes | `\x0`, `\u0065`, `\u{65}` | legacy identity escapes and Unicode code-point escapes are translated to PCRE2 equivalents |
+| ECMAScript unset references | `\1(A)`, `(A|(B))\2` | forward and non-participating backreferences match the empty string |
+| ECMAScript capture names | `(?<$>a)`, `(?<π>b)`, escaped astral names | names are validated as IdentifierNames, mapped to safe PCRE2 names, and restored by the public Group API |
 
 ### Silently different (compiles, but behaves differently — audit these)
 
@@ -167,10 +169,10 @@ Patterns relying on these are *not* portable back to `regexp2`.
 PCRE2's 8-bit UTF mode cannot represent isolated UTF-16 surrogate code units
 (`U+D800`-`U+DFFF`). The rune-oriented APIs therefore return the exported
 `ErrUnsupportedRune` instead of silently converting such input to U+FFFD.
-JavaScript runtimes such as Goja should use PCRE2 for compatible fallback
-patterns and route a pattern containing lone-surrogate escapes, or an input
-that returns `ErrUnsupportedRune`, to a UTF-16-aware engine. This is a narrow
-semantic fallback; removing it completely is not ECMAScript-correct.
+JavaScript runtimes such as Goja must explicitly handle a pattern containing
+lone-surrogate escapes, or an input that returns `ErrUnsupportedRune`. A
+runtime can reject it or use a reversible reserved-code-point mapping while
+preserving UTF-16 indexes; silently converting it to U+FFFD is incorrect.
 
 ## Safety: catastrophic backtracking is bounded
 

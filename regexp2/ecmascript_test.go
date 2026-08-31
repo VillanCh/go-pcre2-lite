@@ -147,6 +147,89 @@ func TestECMAScriptLegacyDecimalEscape(t *testing.T) {
 	}
 }
 
+func TestECMAScriptUnsetBackreferencesMatchEmpty(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		input   string
+	}{
+		{name: "numeric forward", pattern: `\1(A)`, input: "A"},
+		{name: "numeric unmatched branch", pattern: `(A|(B))\2C`, input: "AC"},
+		{name: "named forward", pattern: `\k<x>(?<x>A)`, input: "A"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			re, err := Compile(test.pattern, ECMAScript)
+			if err != nil {
+				t.Fatal(err)
+			}
+			matched, err := re.MatchString(test.input)
+			if err != nil || !matched {
+				t.Fatalf("MatchString(%q) = %v, err=%v", test.input, matched, err)
+			}
+		})
+	}
+}
+
+func TestECMAScriptLegacyUnknownNamedReferenceIsIdentityEscape(t *testing.T) {
+	re, err := Compile(`^\k<missing>$`, ECMAScript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matched, err := re.MatchString("k<missing>"); err != nil || !matched {
+		t.Fatalf("legacy identity escape: matched=%v err=%v", matched, err)
+	}
+	if _, err := Compile(`\k<missing>`, ECMAScript|Unicode); err == nil {
+		t.Fatal("Unicode mode must reject an unknown named reference")
+	}
+}
+
+func TestECMAScriptIdentifierNameCaptures(t *testing.T) {
+	const astral = "𝓑𝓻𝓸𝔀𝓷"
+	re, err := Compile(`^(?<$>a)(?<π>b)(?<\u{1d4d1}\u{1d4fb}\u{1d4f8}\u{1d500}\u{1d4f7}>c)\k<$>$`, ECMAScript|Unicode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := re.FindStringMatch("abca")
+	if err != nil || m == nil {
+		t.Fatalf("match=%v err=%v", m, err)
+	}
+	for name, want := range map[string]string{"$": "a", "π": "b", astral: "c"} {
+		group := m.GroupByName(name)
+		if group == nil || group.String() != want {
+			t.Errorf("group %q = %v, want %q", name, group, want)
+		}
+	}
+	if got := re.GroupNameFromNumber(3); got != astral {
+		t.Fatalf("group 3 name = %q, want %q", got, astral)
+	}
+	replaced, err := re.Replace("abca", `${$}-${π}-${𝓑𝓻𝓸𝔀𝓷}`, -1, -1)
+	if err != nil || replaced != "a-b-c" {
+		t.Fatalf("Replace = %q, err=%v", replaced, err)
+	}
+}
+
+func TestECMAScriptRejectsInvalidCaptureNames(t *testing.T) {
+	for _, pattern := range []string{
+		`(?<>a)`,
+		`(?<1a>a)`,
+		`(?<a-b>a)`,
+		`(?<a!>a)`,
+		`(?<\uD800>a)`,
+		`(?<\u{DFFF}>a)`,
+	} {
+		if _, err := Compile(pattern, ECMAScript|Unicode); err == nil {
+			t.Errorf("Compile(%q) unexpectedly succeeded", pattern)
+		}
+	}
+}
+
+func TestECMAScriptRejectsUnknownNamedReferenceWhenNamesExist(t *testing.T) {
+	if _, err := Compile(`(?<present>a)\k<missing>`, ECMAScript); err == nil {
+		t.Fatal("expected an unknown named-reference error")
+	}
+}
+
 func TestECMAScriptSetEscapeRangeEndpoint(t *testing.T) {
 	re, err := Compile(`^[^\s-_]$`, ECMAScript)
 	if err != nil {

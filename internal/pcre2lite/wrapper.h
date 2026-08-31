@@ -63,6 +63,7 @@ enum {
     P2L_OPT_ALLOW_EMPTY_CLASS = 1u << 12, /* PCRE2_ALLOW_EMPTY_CLASS */
     P2L_OPT_DUPNAMES        = 1u << 13, /* PCRE2_DUPNAMES */
     P2L_OPT_NEVER_UCP       = 1u << 14, /* PCRE2_NEVER_UCP */
+    P2L_OPT_MATCH_UNSET_BACKREF = 1u << 15, /* PCRE2_MATCH_UNSET_BACKREF */
 };
 
 /* Match option bit flags. Mapped to PCRE2 match options in wrapper.c. */

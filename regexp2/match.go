@@ -239,7 +239,7 @@ func (m *Match) populate() {
 func (ms *matchState) makeGroup(re *Regexp, i int, span lib.Span) Group {
 	g := Group{}
 	g.text = ms.text
-	if name, ok := re.re.NumberedGroupName(i); ok {
+	if name := re.GroupNameFromNumber(i); name != "" {
 		g.Name = name
 	} else {
 		g.Name = strconv.Itoa(i)

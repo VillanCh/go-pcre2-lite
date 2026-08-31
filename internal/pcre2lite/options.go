@@ -66,6 +66,10 @@ type CompileOptions struct {
 	AllowEmpty    bool // PCRE2_ALLOW_EMPTY_CLASS
 	DupNames      bool // PCRE2_DUPNAMES: allow duplicate group names
 	NeverUCP      bool // PCRE2_NEVER_UCP
+	// MatchUnsetBackref makes a backreference to an unset capture match the
+	// empty string. ECMAScript requires this for forward references and for
+	// references to captures in branches that did not participate.
+	MatchUnsetBackref bool // PCRE2_MATCH_UNSET_BACKREF
 
 	MatchLimit uint32 // 0 = library default
 	DepthLimit uint32 // 0 = library default

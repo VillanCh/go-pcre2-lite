@@ -150,6 +150,11 @@ and against real-world ReDoS CVEs. What ports cleanly and what does not:
   only difference from JS/.NET is that more than 512 repetitions inside the
   lookbehind are not matched (a generous, configurable bound).
 - Named groups and `\k<name>` backreferences: `(?<year>\d{4})-(?<month>\d{2})`.
+- ECMAScript IdentifierName captures such as `(?<$>a)`, `(?<π>b)`, and escaped
+  astral names. The compatibility layer validates the JavaScript name, maps it
+  to an ASCII-only backend name, and restores the original public group name.
+- Forward and non-participating ECMAScript backreferences match the empty
+  string, including `\1(A)`, `(A|(B))\2`, and named forward references.
 - Unicode property escapes via the **short** names: `\p{N}`, `\p{L}`, and binary
   properties `\p{Alphabetic}`, `\p{Math}` (the compat layer enables UTF+UCP).
 - Character classes where a set shorthand neighbours `-`, e.g. `[\d\w-_]`: the

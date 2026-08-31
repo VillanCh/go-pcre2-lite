@@ -149,6 +149,9 @@ func (o CompileOptions) cmask() C.uint32_t {
 	if o.NeverUCP {
 		m |= C.uint32_t(C.P2L_OPT_NEVER_UCP)
 	}
+	if o.MatchUnsetBackref {
+		m |= C.uint32_t(C.P2L_OPT_MATCH_UNSET_BACKREF)
+	}
 	return m
 }
 

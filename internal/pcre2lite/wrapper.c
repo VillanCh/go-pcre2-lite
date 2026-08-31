@@ -79,6 +79,7 @@ static uint32_t translate_compile_options(uint32_t options) {
     if (options & P2L_OPT_ALLOW_EMPTY_CLASS) out |= PCRE2_ALLOW_EMPTY_CLASS;
     if (options & P2L_OPT_DUPNAMES)          out |= PCRE2_DUPNAMES;
     if (options & P2L_OPT_NEVER_UCP)         out |= PCRE2_NEVER_UCP;
+    if (options & P2L_OPT_MATCH_UNSET_BACKREF) out |= PCRE2_MATCH_UNSET_BACKREF;
     return out;
 }
 

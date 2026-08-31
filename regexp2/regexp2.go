@@ -68,30 +68,48 @@ type Regexp struct {
 	backendPattern string
 	options        RegexOptions
 	re             *lib.Regexp
+	// ECMAScript permits IdentifierName capture names (including $, Unicode,
+	// and escaped code points), while PCRE2 restricts names to ASCII word
+	// characters. These maps preserve the public names after rewriting them to
+	// safe backend-only names.
+	ecmaGroupNames   map[int]string
+	ecmaGroupNumbers map[string]int
 }
 
 // Compile parses a regular expression and returns a Regexp.
 func Compile(expr string, opt RegexOptions) (*Regexp, error) {
 	co := optionsToCompile(opt)
 	backendExpr := expr
+	var ecmaNames map[int]string
 	if opt&ECMAScript != 0 {
 		if opt&Unicode != 0 {
 			if err := validateECMAScriptUnicodeEscapes(expr); err != nil {
 				return nil, err
 			}
 		}
-		backendExpr, _ = rewriteECMAScriptPattern(expr, opt&Singleline != 0, opt&Unicode != 0)
+		var err error
+		backendExpr, ecmaNames, err = rewriteECMAScriptGroupNames(expr, opt&Unicode != 0)
+		if err != nil {
+			return nil, err
+		}
+		backendExpr, _ = rewriteECMAScriptPattern(backendExpr, opt&Singleline != 0, opt&Unicode != 0)
 	}
 	re, err := compileWithCompat(backendExpr, co)
 	if err != nil {
 		return nil, err
 	}
+	groupNumbers := make(map[string]int, len(ecmaNames))
+	for number, name := range ecmaNames {
+		groupNumbers[name] = number
+	}
 	return &Regexp{
-		MatchTimeout:   DefaultMatchTimeout,
-		pattern:        expr,
-		backendPattern: backendExpr,
-		options:        opt,
-		re:             re,
+		MatchTimeout:     DefaultMatchTimeout,
+		pattern:          expr,
+		backendPattern:   backendExpr,
+		options:          opt,
+		re:               re,
+		ecmaGroupNames:   ecmaNames,
+		ecmaGroupNumbers: groupNumbers,
 	}, nil
 }
 
@@ -127,6 +145,9 @@ func optionsToCompile(opt RegexOptions) lib.CompileOptions {
 		// Always UTF so that "." and counting behave per rune, matching the
 		// rune-oriented semantics of regexp2.
 		UTF: true,
+	}
+	if opt&ECMAScript != 0 {
+		co.MatchUnsetBackref = true
 	}
 	if opt&IgnoreCase != 0 {
 		co.Caseless = true
@@ -373,6 +394,9 @@ func (re *Regexp) GetGroupNumbers() []int {
 // GroupNameFromNumber returns the name for a group number, or its decimal
 // representation for an unnamed group, or "" if out of range.
 func (re *Regexp) GroupNameFromNumber(i int) string {
+	if name, ok := re.ecmaGroupNames[i]; ok {
+		return name
+	}
 	if name, ok := re.re.NumberedGroupName(i); ok {
 		return name
 	}
@@ -384,6 +408,9 @@ func (re *Regexp) GroupNameFromNumber(i int) string {
 
 // GroupNumberFromName returns the group number for a name, or -1 if unknown.
 func (re *Regexp) GroupNumberFromName(name string) int {
+	if n, ok := re.ecmaGroupNumbers[name]; ok {
+		return n
+	}
 	if n, ok := re.re.NamedGroupNumber(name); ok {
 		return n
 	}

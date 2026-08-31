@@ -153,14 +153,14 @@ func (re *Regexp) parseReplacement(rep string) []repToken {
 			i++
 			continue
 
-		case angled && isWordRune(ch):
+		case angled:
 			start := j
-			for j < n && isWordRune(runes[j]) {
+			for j < n && runes[j] != '}' {
 				j++
 			}
 			name := string(runes[start:j])
 			if j < n && runes[j] == '}' {
-				if num, ok := re.re.NamedGroupNumber(name); ok {
+				if num := re.GroupNumberFromName(name); num >= 0 {
 					flush()
 					toks = append(toks, repToken{kind: repGroup, num: num})
 					i = j + 1
