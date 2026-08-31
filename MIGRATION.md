@@ -20,10 +20,11 @@ compiled from vendored C source, with JIT permanently disabled.
 
 ## What is verified identical
 
-These are covered by the differential and corpus test suites in this repo:
+These are covered by self-contained golden and corpus test suites in this repo:
 
-- Whole-match results across **1585 inputs / 764 patterns** from the PCRE2
-  official `testoutput1` corpus: **100% agreement** with `dlclark/regexp2`.
+- Migration-facing iteration, capture, rune-offset, replacement, escaping,
+  named-group, and start-offset behavior is pinned by dependency-free golden
+  tests.
 - Behaviour against **PCRE2 10.47's own official regression corpora**
   (`testoutput2` for features/boundaries, `testoutput4` for UTF/Unicode
   properties): match results agree on **929/931** 8-bit cases and **1502/1504**
@@ -136,9 +137,9 @@ error and retry through a UTF-16-aware fallback engine.
 ## JavaScript / Node.js regex portability
 
 This engine is also a practical target for porting JavaScript/Node regexes.
-`js_regex_test.go` checks behaviour against authoritative JS sources (ECMAScript
-`test262` lookbehind/named-group cases, the V8 Unicode-property blog examples)
-and against real-world ReDoS CVEs. What ports cleanly and what does not:
+`regexp2/ecmascript_test.go` pins focused ECMAScript behavior, and the downstream
+Goja integration runs the full `test262` suite. What ports cleanly and what does
+not:
 
 **Ports identically to JS:**
 
@@ -187,9 +188,9 @@ effective defense is capping input length.
 
 ## Performance
 
-Measured on Apple M-series (`go test -bench`), `p2` = this compat layer:
-
-Measured against vendored PCRE2 10.47:
+Historical migration baseline measured on Apple M-series before removing the
+comparison dependency; `p2` is this compatibility layer. Current benchmarks
+are self-contained.
 
 | Scenario              | dlclark            | pcre2-lite       | Speedup | Alloc |
 |-----------------------|--------------------|------------------|---------|-------|
@@ -204,15 +205,14 @@ Boolean matching is allocation-free on the hot path.
 
 ## How compatibility is verified
 
-- `corpus_pcre_test.go`   — 1585 inputs from PCRE2 `testoutput1`, dl-vs-p2.
 - `pcre2_official_test.go` — PCRE2 10.47 own corpora (`testoutput2` features/
   boundaries, `testoutput4` UTF/properties): match + compile accept/reject vs
   upstream ground truth.
-- `js_regex_test.go`      — JS/Node compatibility (test262/V8 lookbehind, named
-  groups, Unicode properties) and real-world ReDoS CVE safety.
-- `differential_test.go`, `differential_replace_test.go` — core + replace parity.
-- `feature_compat_test.go` — full-iteration, all-group, named-group parity.
-- `safety_test.go`        — ReDoS bounding, invalid UTF-8, huge input, deep nesting.
+- `regexp2/ecmascript_test.go` — focused ECMAScript whitespace, escapes,
+  Unicode, named-group, backreference, and lookbehind semantics.
+- `regexp2/api_golden_test.go` — core iteration, groups, offsets, escaping, and
+  replacement behavior.
+- `regexp2/compat_test.go` — PCRE2 compatibility rewrites and boundary cases.
 - `pcre2_1047_regression_test.go` — per-version behaviour pins for 10.44–10.47
   (variable-length lookbehind first-branch fix, `\X` ZWJ grapheme break, scan-
   substring `(*scs:)`/`(*scan_substring:)`, `(*ACCEPT)`-in-scs CVE-2025-58050
@@ -221,4 +221,5 @@ Boolean matching is allocation-free on the hot path.
   128-char limit boundary, and the named-group hash-lookup guard). Every case is
   asserted against the authoritative `pcre2test` golden output for that release.
 - `stress_test.go`        — 20k+ random adversarial patterns, all bounded.
-- `benchmark*_test.go`    — throughput/allocation vs dlclark and std `regexp`.
+- `benchmark_test.go`     — self-contained compatibility, low-level PCRE2,
+  standard-library, ECMAScript lookbehind, and match-limit benchmarks.

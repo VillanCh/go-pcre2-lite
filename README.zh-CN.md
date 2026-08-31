@@ -28,8 +28,8 @@ go get github.com/VillanCh/go-pcre2-lite
 需要 `CGO_ENABLED=1` 和一套 C 工具链（PCRE2 的 C 源码随包 vendoring 并一起编译，
 代码中从不引用 JIT）。
 
-生产模块不依赖 `github.com/dlclark/regexp2`。行为对照测试被隔离在独立的
-`differential` 嵌套模块中，不会进入下游项目的模块依赖图。
+整个仓库及发布模块均不依赖 `github.com/dlclark/regexp2`。兼容性由自包含黄金测试、
+PCRE2 官方语料以及下游 Goja Test262 持续固定。
 
 ## 使用
 
@@ -174,9 +174,11 @@ match 限制约束的是**指数级**回溯，而非**多项式**（如二次方
 
 ## 性能
 
-测试环境 `go test -bench`、`darwin/arm64`（Apple M 系列）。在相同负载下对比的后端：
+以下为移除对照引擎之前在 `darwin/arm64`（Apple M 系列）用 `go test -bench` 取得的
+历史迁移基线。在相同负载下对比的后端：
 `dlclark` = 被替换的引擎，**drop-in** = 本库的 `regexp2` 兼容层（rune 输出），
 **low-level** = 字节 API；`std` = Go 标准库 `regexp`（RE2），在其语法支持的场景下列出。
+这些数据仅作为历史迁移证据保留；当前 CI 基准完全自包含，不导入对照引擎。
 
 ![相对 dlclark/regexp2 的吞吐](assets/bench-speedup.png)
 
@@ -235,17 +237,16 @@ drop-in 层在所有基准上都快于 `dlclark/regexp2`，低层字节 API 更�
 | 默认 match 限制 | 约 120 ms 返回 `ErrMatchLimit`（有界） |
 | `SetMatchLimits(50000, …)` | 约 0.6 ms 返回 `ErrMatchLimit` |
 
-复现数据并重新生成图表：
+运行当前无外部对照依赖的基准：
 
 ```bash
-CGO_ENABLED=1 go test -bench . -benchmem -run '^$' .   # 运行基准
-python3 tools/benchviz/plot.py                          # 重新生成 assets/*.png
+CGO_ENABLED=1 go test -bench . -benchmem -run '^$' ./...
 ```
 
 ## 兼容性验证
 
-- **与 `dlclark/regexp2` 对齐：** 在 PCRE2 官方 1585 条输入的 `testoutput1` 语料上整段
-  匹配 100% 一致，另有针对替换、完整迭代、分组访问的专门差分测试。
+- **迁移 API 黄金测试：** 在不导入其他正则引擎的前提下，固定替换展开、完整迭代、
+  rune 偏移、命名 / 编号分组访问、未参与捕获、转义及起始偏移行为。
 - **以 PCRE2 10.47 为基准真值：** 匹配结果在 PCRE2 自带 `testoutput2`/`testoutput4`
   语料上达成 929/931（8 位）与 1502/1504（UTF）一致；编译接受/拒绝在 1258/1258 接受、
   385/388 拒绝上一致（少数未命中是语料解析器对边界用例的近似，并非引擎缺陷）。
@@ -262,9 +263,9 @@ python3 tools/benchviz/plot.py                          # 重新生成 assets/*.
 ## 测试
 
 ```bash
-CGO_ENABLED=1 go test ./...            # 单元 + 差分 + 语料 + 安全
+CGO_ENABLED=1 go test ./...            # 单元 + 黄金 + 语料 + 安全
 CGO_ENABLED=1 go test -race ./...      # 无数据竞争
-CGO_ENABLED=1 go test -bench . ./...   # 对比 dlclark 与标准库 regexp 的基准
+CGO_ENABLED=1 go test -bench . ./...   # 兼容层、低层、标准库及安全基准
 ```
 
 ## 重新生成 vendoring 的 PCRE2 源码

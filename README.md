@@ -31,9 +31,9 @@ go get github.com/VillanCh/go-pcre2-lite
 Requires `CGO_ENABLED=1` and a C toolchain (the PCRE2 C source is vendored and
 compiled with the package; JIT is never referenced).
 
-The production module has no dependency on `github.com/dlclark/regexp2`. The
-optional behavior-comparison suite lives in the isolated `differential`
-nested module and is never added to downstream module graphs.
+The repository and published module have no dependency on
+`github.com/dlclark/regexp2`. Compatibility is pinned with self-contained
+golden tests, PCRE2's official corpus, and downstream Goja Test262 runs.
 
 ## Usage
 
@@ -191,10 +191,13 @@ effective defense is capping input length.
 
 ## Performance
 
-Measured with `go test -bench`, `darwin/arm64` (Apple M-series). Three backends
-on identical work: `dlclark` = the engine we replace, **drop-in** = this
+Historical migration baseline measured with `go test -bench`, `darwin/arm64`
+(Apple M-series), before the comparison engine was removed from the repository.
+Three backends ran identical work: `dlclark` = the engine we replace, **drop-in** = this
 `regexp2` compat layer (rune output), **low-level** = the byte API. `std` = the
-Go standard library `regexp` (RE2), shown where its syntax allows.
+Go standard library `regexp` (RE2), shown where its syntax allows. These
+figures are retained as historical migration evidence; current CI benchmarks
+are self-contained and do not import the comparison engine.
 
 ![Throughput vs dlclark/regexp2](assets/bench-speedup.png)
 
@@ -259,18 +262,17 @@ long-running services:
 | default match limit | `ErrMatchLimit` in ~120 ms (bounded) |
 | `SetMatchLimits(50000, …)` | `ErrMatchLimit` in ~0.6 ms |
 
-Reproduce the numbers and regenerate the figures with:
+Run the current dependency-free benchmark suite with:
 
 ```bash
-CGO_ENABLED=1 go test -bench . -benchmem -run '^$' .   # run benchmarks
-python3 tools/benchviz/plot.py                          # regenerate assets/*.png
+CGO_ENABLED=1 go test -bench . -benchmem -run '^$' ./...
 ```
 
 ## Compatibility verification
 
-- **`dlclark/regexp2` parity:** 100% whole-match agreement over the 1585-input
-  PCRE2 official `testoutput1` corpus, plus dedicated differential tests for
-  replace, full iteration, and group access.
+- **Migration API goldens:** self-contained tests pin replacement expansion,
+  full iteration, rune offsets, named/numbered group access, unset captures,
+  escaping, and start-offset behavior without importing another regex engine.
 - **PCRE2 10.47 ground truth:** match results agree on 929/931 (8-bit) and
   1502/1504 (UTF) cases from PCRE2's own `testoutput2`/`testoutput4` corpora;
   compile accept/reject agrees on 1258/1258 accepted and 385/388 rejected (the
@@ -291,9 +293,9 @@ python3 tools/benchviz/plot.py                          # regenerate assets/*.pn
 ## Testing
 
 ```bash
-CGO_ENABLED=1 go test ./...            # unit + differential + corpus + safety
+CGO_ENABLED=1 go test ./...            # unit + golden + corpus + safety
 CGO_ENABLED=1 go test -race ./...      # data-race free
-CGO_ENABLED=1 go test -bench . ./...   # benchmarks vs dlclark and std regexp
+CGO_ENABLED=1 go test -bench . ./...   # compatibility, low-level, stdlib, safety
 ```
 
 ## Regenerating the vendored PCRE2 source

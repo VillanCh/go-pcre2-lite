@@ -32,6 +32,18 @@ jobs:
             echo "$out"
             exit 1
           fi
+      - name: Verify dependency policy
+        shell: bash
+        run: |
+          test "$(git ls-files 'go.mod')" = "go.mod"
+          if git grep -n '"github.com/dlclark/regexp2' -- '*.go'; then
+            echo 'dlclark/regexp2 import found'
+            exit 1
+          fi
+          if git grep -n 'github.com/dlclark/regexp2' -- 'go.mod' 'go.sum'; then
+            echo 'dlclark/regexp2 module dependency found'
+            exit 1
+          fi
       - name: go vet
         run: go vet ./...
 
@@ -59,29 +71,6 @@ jobs:
       - name: Build
         run: go build ./...
       - name: Test
-        run: go test -count=1 ./...
-
-  differential:
-    name: Differential oracle suite
-    runs-on: ubuntu-latest
-    env:
-      CGO_ENABLED: "1"
-    defaults:
-      run:
-        working-directory: differential
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
-        with:
-          go-version: stable
-          cache: false
-      - name: Verify isolated module graph
-        run: |
-          if (cd .. && go list -m all | grep -q 'github.com/dlclark/regexp2'); then
-            echo 'regexp2 leaked into the production module graph'
-            exit 1
-          fi
-      - name: Test compatibility oracles
         run: go test -count=1 ./...
 
   race:
@@ -117,8 +106,4 @@ jobs:
       # performance (CI hardware is noisy) but guarantees the benchmarks still
       # compile and run without panicking.
       - name: Run benchmarks (1x smoke)
-        run: go test -run '^$' -bench . -benchtime=1x ./...
-
-      - name: Run differential benchmarks (1x smoke)
-        working-directory: differential
         run: go test -run '^$' -bench . -benchtime=1x ./...
