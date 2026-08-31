@@ -42,6 +42,25 @@ typedef struct {
     size_t end;
 } p2l_span;
 
+/* Stable view of the subset of pcre2_callout_block used by the Go bridge.
+   offsets contains 2 * capture_capacity entries (group 0 first) and points at
+   PCRE2's live backtracking frame. A callback may update capture offsets; the
+   engine then observes those values in later backreferences and in the final
+   match result. */
+typedef struct {
+    uint32_t       number;
+    uint32_t       capture_top;
+    size_t         capture_capacity;
+    size_t         current_position;
+    const uint8_t *subject;
+    size_t         subject_length;
+    size_t        *offsets;
+} p2l_callout_block;
+
+/* Implemented by cgo. Return 0 to continue, a positive value to make the
+   current matching path fail/backtrack, or a negative PCRE2 error code. */
+int p2l_go_callout(uintptr_t handle, p2l_callout_block *block);
+
 /* Sentinel marking an unset (non-participating) capture group. Mirrors
    PCRE2_UNSET (SIZE_MAX). */
 #define P2L_UNSET ((size_t)-1)
@@ -125,6 +144,14 @@ int p2l_match(const p2l_regex *regex, const uint8_t *subject, size_t subject_len
               size_t start_offset, uint32_t options, p2l_scratch *scratch,
               p2l_span *spans, size_t span_capacity, size_t *span_count,
               p2l_error *error);
+
+/* p2l_match with a synchronous Go callout bridge enabled. handle is an opaque
+   runtime/cgo.Handle value owned by the caller for the duration of this call. */
+int p2l_match_callout(const p2l_regex *regex, const uint8_t *subject,
+                      size_t subject_len, size_t start_offset, uint32_t options,
+                      p2l_scratch *scratch, uintptr_t handle,
+                      p2l_span *spans, size_t span_capacity,
+                      size_t *span_count, p2l_error *error);
 
 /*
  * Find successive non-overlapping matches in a single call, amortizing the cgo

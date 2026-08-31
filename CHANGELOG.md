@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.1.5 - 2026-08-31
+
+- Implement ECMAScript lookbehind capture semantics on the PCRE2 backend,
+  including right-to-left capture order, variable-length alternatives,
+  quantified captures, nested assertions, and positive or negative assertions.
+- Preserve internal, external, forward, named, and mutually dependent
+  backreferences across lookbehind assertions without adding a pure-Go regular
+  expression engine to the production dependency graph.
+- Add a low-level PCRE2 callout bridge that can inspect and update capture
+  offsets while retaining configured match and depth limits.
+- Disable auto-possessification only for ECMAScript patterns that need the
+  lookbehind compatibility bridge, allowing the native matcher to backtrack
+  when assertion captures constrain the surrounding expression.
+- Add focused compatibility, sliced-input, concurrency, and limit-update tests;
+  validate the result against Goja's full Test262 suite.
+
 ## v0.1.4 - 2026-08-31
 
 - Remove `github.com/dlclark/regexp2` from the production module graph.
