@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.1.6 - 2026-09-01
+
+- Remove the isolated differential module and its
+  `github.com/dlclark/regexp2` development dependency; the repository now has
+  one module and no dependency on that engine anywhere in its module graph.
+- Replace runtime comparison tests with self-contained API golden tests for
+  iteration, captures, rune offsets, replacement expansion, escaping, named
+  groups, and start offsets.
+- Keep benchmark smoke coverage with local compatibility, low-level PCRE2,
+  standard-library, ECMAScript lookbehind, and match-limit benchmarks.
+- Add CI policy checks that reject future `dlclark/regexp2` imports or module
+  entries and reject additional tracked Go modules.
+
 ## v0.1.5 - 2026-08-31
 
 - Implement ECMAScript lookbehind capture semantics on the PCRE2 backend,
