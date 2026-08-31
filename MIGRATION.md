@@ -128,6 +128,11 @@ replacement character (U+FFFD) before matching, so it never errors on bad input
 (rune-oriented, like `regexp2`). The low-level byte API returns `ErrBadUTF` in
 UTF mode instead.
 
+Rune-oriented calls with isolated UTF-16 surrogates or any other invalid Go
+rune return `ErrUnsupportedRune`. PCRE2 8-bit UTF cannot represent those code
+units without changing their identity. JavaScript embedders should detect this
+error and retry through a UTF-16-aware fallback engine.
+
 ## JavaScript / Node.js regex portability
 
 This engine is also a practical target for porting JavaScript/Node regexes.
@@ -150,6 +155,8 @@ and against real-world ReDoS CVEs. What ports cleanly and what does not:
 - Character classes where a set shorthand neighbours `-`, e.g. `[\d\w-_]`: the
   compat layer treats the `-` as a literal (as .NET/RE2 do), avoiding PCRE2's
   "invalid range in character class" error.
+- ECMAScript `\s` / `\S`, dot line terminators, empty `[]` / `[^]` classes,
+  legacy identity escapes, `\uXXXX`, and Unicode-mode `\u{...}` escapes.
 - Global iteration over successive matches (`FindNextMatch`).
 
 **Documented JS-vs-PCRE2 divergences** (each has a dedicated test):
