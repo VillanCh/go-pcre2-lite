@@ -19,10 +19,11 @@ jobs:
     env:
       CGO_ENABLED: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: stable
+          cache: false
       - name: Check gofmt
         run: |
           out="$(gofmt -l .)"
@@ -50,10 +51,11 @@ jobs:
     env:
       CGO_ENABLED: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: ${{ matrix.go }}
+          cache: false
       - name: Build
         run: go build ./...
       - name: Test
@@ -68,10 +70,11 @@ jobs:
       run:
         working-directory: differential
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: stable
+          cache: false
       - name: Verify isolated module graph
         run: |
           if (cd .. && go list -m all | grep -q 'github.com/dlclark/regexp2'); then
@@ -91,10 +94,11 @@ jobs:
     env:
       CGO_ENABLED: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: stable
+          cache: false
       - name: Test with -race
         run: go test -race -count=1 ./...
 
@@ -104,10 +108,11 @@ jobs:
     env:
       CGO_ENABLED: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: stable
+          cache: false
       # Run every benchmark for a single iteration: this does not measure
       # performance (CI hardware is noisy) but guarantees the benchmarks still
       # compile and run without panicking.
