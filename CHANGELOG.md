@@ -3,6 +3,10 @@
 ## v0.1.4 - 2026-08-31
 
 - Remove `github.com/dlclark/regexp2` from the production module graph.
+- Implement ECMAScript Annex B legacy decimal escapes, including the
+  out-of-range `\2` form found in a 28 MiB production JavaScript bundle.
+- Preserve literal hyphens next to ECMAScript set escapes such as `[^\s-_]`
+  while expanding JavaScript whitespace semantics for PCRE2.
 - Isolate the optional compatibility oracle and comparative benchmarks in the
   nested `differential` test module, so downstream users no longer inherit the
   reference engine or its checksums.

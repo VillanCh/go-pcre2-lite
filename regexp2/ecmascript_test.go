@@ -116,6 +116,61 @@ func TestECMAScriptRewriteLeavesEscapedBackslashAlone(t *testing.T) {
 	}
 }
 
+func TestECMAScriptLegacyDecimalEscape(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		input   string
+		want    bool
+	}{
+		{name: "production-regression", pattern: `(~~?)(?:(?!~)<inner>)+\2`, input: "~<inner>\x02", want: true},
+		{name: "existing-backreference", pattern: `(a)\1`, input: "aa", want: true},
+		{name: "out-of-range-before-capture", pattern: `\2(a)`, input: "\x02a", want: true},
+		{name: "two-digit-octal", pattern: `(a)\12`, input: "a\n", want: true},
+		{name: "identity-eight", pattern: `\8`, input: "8", want: true},
+		{name: "class-octal", pattern: `[\2]`, input: "\x02", want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			re, err := Compile(test.pattern, ECMAScript)
+			if err != nil {
+				t.Fatal(err)
+			}
+			matched, err := re.MatchString(test.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if matched != test.want {
+				t.Fatalf("MatchString(%q) = %v, want %v", test.input, matched, test.want)
+			}
+		})
+	}
+}
+
+func TestECMAScriptSetEscapeRangeEndpoint(t *testing.T) {
+	re, err := Compile(`^[^\s-_]$`, ECMAScript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		input string
+		want  bool
+	}{
+		{input: "a", want: true},
+		{input: " ", want: false},
+		{input: "-", want: false},
+		{input: "_", want: false},
+	} {
+		matched, err := re.MatchString(test.input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if matched != test.want {
+			t.Fatalf("MatchString(%q) = %v, want %v", test.input, matched, test.want)
+		}
+	}
+}
+
 func TestECMAScriptUnicodeEscapes(t *testing.T) {
 	cases := []struct {
 		name    string

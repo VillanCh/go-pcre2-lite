@@ -96,6 +96,7 @@ func rewriteECMAScriptPattern(expr string, dotAll, unicode bool) (string, bool) 
 	var out strings.Builder
 	out.Grow(len(expr))
 	changed := false
+	captureCount := countECMAScriptCaptures(expr)
 
 	for i := 0; i < len(expr); {
 		switch expr[i] {
@@ -118,7 +119,7 @@ func rewriteECMAScriptPattern(expr string, dotAll, unicode bool) (string, bool) 
 				changed = true
 				i += 2
 			default:
-				replacement, next, escapeChanged := rewriteECMAScriptEscape(expr, i, unicode)
+				replacement, next, escapeChanged := rewriteECMAScriptEscape(expr, i, unicode, captureCount, false)
 				out.WriteString(replacement)
 				changed = changed || escapeChanged
 				i = next
@@ -169,17 +170,79 @@ func rewriteECMAScriptPattern(expr string, dotAll, unicode bool) (string, bool) 
 	return out.String(), true
 }
 
+// countECMAScriptCaptures counts capturing parentheses without attempting to
+// validate the entire expression. The total is needed before rewriting legacy
+// decimal escapes because JavaScript permits forward backreferences, while a
+// decimal escape larger than the final capture count has Annex B octal or
+// identity-escape semantics in non-Unicode mode.
+func countECMAScriptCaptures(expr string) int {
+	count := 0
+	for i := 0; i < len(expr); {
+		switch expr[i] {
+		case '\\':
+			i += 2
+		case '[':
+			i = findECMAScriptClassEnd(expr, i)
+			if i < 0 {
+				return count
+			}
+			i++
+		case '(':
+			if i+1 >= len(expr) || expr[i+1] != '?' {
+				count++
+			} else if i+2 < len(expr) && expr[i+2] == '<' &&
+				(i+3 >= len(expr) || (expr[i+3] != '=' && expr[i+3] != '!')) {
+				count++
+			}
+			i++
+		default:
+			i++
+		}
+	}
+	return count
+}
+
 // rewriteECMAScriptEscape translates JavaScript's Unicode escape spelling to
 // PCRE2's spelling. In legacy (non-u) mode an invalid \x or \u starts an
 // identity escape, so the backslash is discarded and the following bytes are
 // parsed normally. Lone UTF-16 surrogates intentionally remain unsupported:
 // PCRE2's 8-bit UTF mode cannot represent those code units, so callers that
 // need exact JavaScript semantics must fall back to a UTF-16-aware engine.
-func rewriteECMAScriptEscape(expr string, start int, unicode bool) (string, int, bool) {
+func rewriteECMAScriptEscape(expr string, start int, unicode bool, captureCount int, inClass bool) (string, int, bool) {
 	if start+1 >= len(expr) {
 		return expr[start:], len(expr), false
 	}
 	switch expr[start+1] {
+	case '1', '2', '3', '4', '5', '6', '7', '8', '9':
+		end := start + 2
+		for end < len(expr) && expr[end] >= '0' && expr[end] <= '9' {
+			end++
+		}
+		decimal, err := strconv.Atoi(expr[start+1 : end])
+		if !inClass && err == nil && decimal <= captureCount {
+			return expr[start:end], end, false
+		}
+		if unicode {
+			// Leave invalid Unicode-mode escapes untouched so PCRE2 rejects
+			// them instead of silently changing the expression.
+			return expr[start:end], end, false
+		}
+		first := expr[start+1]
+		if first == '8' || first == '9' {
+			// NonOctalDecimalEscape: \8 and \9 are identity escapes.
+			return string(first), start + 2, true
+		}
+		maxDigits := 2
+		if first <= '3' {
+			maxDigits = 3
+		}
+		octalEnd := start + 1
+		for octalEnd < end && octalEnd < start+1+maxDigits &&
+			expr[octalEnd] >= '0' && expr[octalEnd] <= '7' {
+			octalEnd++
+		}
+		value, _ := strconv.ParseUint(expr[start+1:octalEnd], 8, 8)
+		return `\x{` + strconv.FormatUint(value, 16) + `}`, octalEnd, true
 	case 'x':
 		if start+4 <= len(expr) && isHexBytes(expr[start+2:start+4]) {
 			return expr[start : start+4], start + 4, false
@@ -263,27 +326,44 @@ func rewriteECMAScriptClass(body string, negated, unicode bool) (string, bool) {
 	var members strings.Builder
 	members.Grow(len(body))
 	hasSpace, hasNonSpace, changed := false, false, false
+	prevWasSet := false
 	for i := 0; i < len(body); {
 		if body[i] == '\\' && i+1 < len(body) {
 			switch body[i+1] {
 			case 's':
 				members.WriteString(ecmaWhitespaceClassBody)
 				hasSpace = true
+				prevWasSet = true
 				i += 2
 				continue
 			case 'S':
 				hasNonSpace = true
+				prevWasSet = true
 				i += 2
 				continue
 			default:
-				replacement, next, escapeChanged := rewriteECMAScriptEscape(body, i, unicode)
+				replacement, next, escapeChanged := rewriteECMAScriptEscape(body, i, unicode, 0, true)
 				members.WriteString(replacement)
 				changed = changed || escapeChanged
+				prevWasSet = isSetEscapeLetter(body[i+1])
 				i = next
 				continue
 			}
 		}
+		if body[i] == '-' {
+			nextIsSet := i+2 < len(body) && body[i+1] == '\\' && isSetEscapeLetter(body[i+2])
+			if prevWasSet || nextIsSet {
+				members.WriteString(`\-`)
+				changed = true
+			} else {
+				members.WriteByte('-')
+			}
+			prevWasSet = false
+			i++
+			continue
+		}
 		members.WriteByte(body[i])
+		prevWasSet = false
 		i++
 	}
 
