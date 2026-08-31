@@ -22,7 +22,7 @@ import (
 	dl "github.com/dlclark/regexp2"
 )
 
-const corpusPath = "testdata/pcre2_testoutput1.txt"
+const corpusPath = "../testdata/pcre2_testoutput1.txt"
 
 // minAgreement is the required whole-match agreement ratio between dlclark and
 // pcre2-lite over the corpus inputs where both engines compile the pattern and

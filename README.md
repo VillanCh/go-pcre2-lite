@@ -31,6 +31,10 @@ go get github.com/VillanCh/go-pcre2-lite
 Requires `CGO_ENABLED=1` and a C toolchain (the PCRE2 C source is vendored and
 compiled with the package; JIT is never referenced).
 
+The production module has no dependency on `github.com/dlclark/regexp2`. The
+optional behavior-comparison suite lives in the isolated `differential`
+nested module and is never added to downstream module graphs.
+
 ## Usage
 
 ### Drop-in `regexp2` replacement (rune-oriented, recommended)
