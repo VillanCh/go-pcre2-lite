@@ -140,6 +140,9 @@ raw PCRE2 rejects, so the common case "just works":
 |---|---|---|
 | Variable-length lookbehind | `(?<=a+)b`, `(?<="text":\s*")` | PCRE2 10.47 supports bounded variable-length lookbehind natively; unbounded quantifiers inside a lookbehind are tightened to `{n,512}` so they compile and match (>512 repetitions are not matched) |
 | Set shorthand beside `-` in a class | `[\d\w-_]`, `[a-\w]` | the `-` is treated as a literal (as .NET/RE2 do), avoiding "invalid range in character class" |
+| ECMAScript whitespace / dot | `\s`, `\S`, `.`, `[\Sx]` | exact JavaScript WhiteSpace + LineTerminator semantics, including U+2028/U+2029 and BOM |
+| ECMAScript empty classes | `[]`, `[^]` | never-match / match-any-character semantics, including line terminators |
+| ECMAScript escapes | `\x0`, `\u0065`, `\u{65}` | legacy identity escapes and Unicode code-point escapes are translated to PCRE2 equivalents |
 
 ### Silently different (compiles, but behaves differently — audit these)
 
@@ -154,6 +157,16 @@ raw PCRE2 rejects, so the common case "just works":
 Possessive quantifiers `a++`, atomic groups `(?>…)`, recursion `(?R)`, `\K`,
 and subroutine calls `(?&name)` all compile here and are rejected by `dlclark`.
 Patterns relying on these are *not* portable back to `regexp2`.
+
+### JavaScript runtimes: keep a narrow UTF-16 fallback
+
+PCRE2's 8-bit UTF mode cannot represent isolated UTF-16 surrogate code units
+(`U+D800`-`U+DFFF`). The rune-oriented APIs therefore return the exported
+`ErrUnsupportedRune` instead of silently converting such input to U+FFFD.
+JavaScript runtimes such as Goja should use PCRE2 for compatible fallback
+patterns and route a pattern containing lone-surrogate escapes, or an input
+that returns `ErrUnsupportedRune`, to a UTF-16-aware engine. This is a narrow
+semantic fallback; removing it completely is not ECMAScript-correct.
 
 ## Safety: catastrophic backtracking is bounded
 

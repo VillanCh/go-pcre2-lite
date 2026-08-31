@@ -30,6 +30,11 @@ var (
 	DefaultMatchTimeout = time.Duration(math.MaxInt64)
 	// DefaultUnmarshalOptions used when unmarshaling a regex from text.
 	DefaultUnmarshalOptions = None
+	// ErrUnsupportedRune is returned by rune-oriented APIs when the input
+	// contains a value that cannot be represented by PCRE2's 8-bit UTF mode,
+	// including an isolated UTF-16 surrogate. Callers implementing JavaScript
+	// semantics can use errors.Is to route that rare input to a UTF-16 backend.
+	ErrUnsupportedRune = errors.New("regexp2: input contains a rune that PCRE2 8-bit UTF mode cannot represent")
 )
 
 // RegexOptions impact the parsing and runtime behavior of a regex. The values
@@ -59,23 +64,34 @@ type Regexp struct {
 	// finite value here does not abort a running match. See SetMatchLimits.
 	MatchTimeout time.Duration
 
-	pattern string
-	options RegexOptions
-	re      *lib.Regexp
+	pattern        string
+	backendPattern string
+	options        RegexOptions
+	re             *lib.Regexp
 }
 
 // Compile parses a regular expression and returns a Regexp.
 func Compile(expr string, opt RegexOptions) (*Regexp, error) {
 	co := optionsToCompile(opt)
-	re, err := compileWithCompat(expr, co)
+	backendExpr := expr
+	if opt&ECMAScript != 0 {
+		if opt&Unicode != 0 {
+			if err := validateECMAScriptUnicodeEscapes(expr); err != nil {
+				return nil, err
+			}
+		}
+		backendExpr, _ = rewriteECMAScriptPattern(expr, opt&Singleline != 0, opt&Unicode != 0)
+	}
+	re, err := compileWithCompat(backendExpr, co)
 	if err != nil {
 		return nil, err
 	}
 	return &Regexp{
-		MatchTimeout: DefaultMatchTimeout,
-		pattern:      expr,
-		options:      opt,
-		re:           re,
+		MatchTimeout:   DefaultMatchTimeout,
+		pattern:        expr,
+		backendPattern: backendExpr,
+		options:        opt,
+		re:             re,
 	}, nil
 }
 
@@ -143,7 +159,7 @@ func (re *Regexp) SetMatchLimits(matchLimit, depthLimit uint32) error {
 	co := optionsToCompile(re.options)
 	co.MatchLimit = matchLimit
 	co.DepthLimit = depthLimit
-	newRe, err := compileWithCompat(re.pattern, co)
+	newRe, err := compileWithCompat(re.backendPattern, co)
 	if err != nil {
 		return err
 	}
@@ -202,6 +218,9 @@ func (re *Regexp) MatchString(s string) (bool, error) {
 
 // MatchRunes returns true if the runes match the regex.
 func (re *Regexp) MatchRunes(r []rune) (bool, error) {
+	if containsUnsupportedRune(r) {
+		return false, ErrUnsupportedRune
+	}
 	return re.re.Match([]byte(string(r)))
 }
 
@@ -213,6 +232,9 @@ func (re *Regexp) FindStringMatch(s string) (*Match, error) {
 
 // FindRunesMatch searches the input rune slice for a Regexp match.
 func (re *Regexp) FindRunesMatch(r []rune) (*Match, error) {
+	if containsUnsupportedRune(r) {
+		return nil, ErrUnsupportedRune
+	}
 	ms := newMatchStateRunes(re, r)
 	return re.findCore(ms, 0, false)
 }
@@ -239,6 +261,9 @@ func (re *Regexp) FindStringMatchStartingAt(s string, startAt int) (*Match, erro
 
 // FindRunesMatchStartingAt searches the rune slice starting at rune index startAt.
 func (re *Regexp) FindRunesMatchStartingAt(r []rune, startAt int) (*Match, error) {
+	if containsUnsupportedRune(r) {
+		return nil, ErrUnsupportedRune
+	}
 	ms := newMatchStateRunes(re, r)
 	if startAt < 0 {
 		startAt = 0
@@ -246,7 +271,20 @@ func (re *Regexp) FindRunesMatchStartingAt(r []rune, startAt int) (*Match, error
 	if startAt > len(r) {
 		return nil, errors.New("startAt must be less than the length of the input")
 	}
-	return re.findCore(ms, ms.runeStarts[startAt], false)
+	byteStart := startAt
+	if !ms.ascii {
+		byteStart = ms.runeStarts[startAt]
+	}
+	return re.findCore(ms, byteStart, false)
+}
+
+func containsUnsupportedRune(runes []rune) bool {
+	for _, r := range runes {
+		if !utf8.ValidRune(r) {
+			return true
+		}
+	}
+	return false
 }
 
 // FindNextMatch returns the next match in the same input as the match parameter.

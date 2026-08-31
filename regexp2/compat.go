@@ -1,6 +1,7 @@
 package regexp2
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -21,6 +22,304 @@ import (
 
 // varLookbehindCap 是无界量词(* + {n,})在 lookbehind 内被收紧到的重复次数上界.
 const varLookbehindCap = 512
+
+// ecmaWhitespaceClassBody is the exact ECMAScript WhiteSpace + LineTerminator
+// set used by the \s and \S character class escapes. In particular it includes
+// the Unicode space separators and BOM, while excluding U+0085 and U+200B.
+const ecmaWhitespaceClassBody = `\x09-\x0d\x20\x{00a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}`
+
+func validateECMAScriptUnicodeEscapes(expr string) error {
+	for i := 0; i < len(expr); {
+		if expr[i] != '\\' {
+			i++
+			continue
+		}
+		if i+1 >= len(expr) {
+			return fmt.Errorf("invalid trailing escape at byte %d", i)
+		}
+		switch expr[i+1] {
+		case 'x':
+			if i+4 > len(expr) || !isHexBytes(expr[i+2:i+4]) {
+				return fmt.Errorf("invalid ECMAScript hex escape at byte %d", i)
+			}
+			i += 4
+		case 'u':
+			if i+2 < len(expr) && expr[i+2] == '{' {
+				relEnd := strings.IndexByte(expr[i+3:], '}')
+				if relEnd < 0 {
+					return fmt.Errorf("unterminated ECMAScript Unicode escape at byte %d", i)
+				}
+				end := i + 3 + relEnd
+				digits := expr[i+3 : end]
+				if len(digits) < 1 || len(digits) > 6 || !isHexBytes(digits) {
+					return fmt.Errorf("invalid ECMAScript Unicode escape at byte %d", i)
+				}
+				value, _ := strconv.ParseUint(digits, 16, 32)
+				if value > 0x10ffff {
+					return fmt.Errorf("ECMAScript Unicode escape is out of range at byte %d", i)
+				}
+				if isUTF16Surrogate(value) {
+					return fmt.Errorf("%w in pattern at byte %d", ErrUnsupportedRune, i)
+				}
+				i = end + 1
+				continue
+			}
+			if i+6 > len(expr) || !isHexBytes(expr[i+2:i+6]) {
+				return fmt.Errorf("invalid ECMAScript Unicode escape at byte %d", i)
+			}
+			value, _ := strconv.ParseUint(expr[i+2:i+6], 16, 16)
+			if value >= 0xd800 && value <= 0xdbff && i+12 <= len(expr) &&
+				expr[i+6:i+8] == `\u` && isHexBytes(expr[i+8:i+12]) {
+				low, _ := strconv.ParseUint(expr[i+8:i+12], 16, 16)
+				if low >= 0xdc00 && low <= 0xdfff {
+					i += 12
+					continue
+				}
+			}
+			if isUTF16Surrogate(value) {
+				return fmt.Errorf("%w in pattern at byte %d", ErrUnsupportedRune, i)
+			}
+			i += 6
+		default:
+			i += 2
+		}
+	}
+	return nil
+}
+
+// rewriteECMAScriptPattern translates the small set of ECMAScript atoms whose
+// semantics differ from PCRE2. Goja normally performs the same translation for
+// its RE2 fast path, but sends the original expression to its fallback engine
+// as soon as it sees a lookaround, backreference, or another RE2-incompatible
+// construct. Keeping the translation here makes that fallback self-contained.
+func rewriteECMAScriptPattern(expr string, dotAll, unicode bool) (string, bool) {
+	var out strings.Builder
+	out.Grow(len(expr))
+	changed := false
+
+	for i := 0; i < len(expr); {
+		switch expr[i] {
+		case '\\':
+			switch {
+			case i+1 >= len(expr):
+				out.WriteByte(expr[i])
+				i++
+				continue
+			case expr[i+1] == 's':
+				out.WriteByte('[')
+				out.WriteString(ecmaWhitespaceClassBody)
+				out.WriteByte(']')
+				changed = true
+				i += 2
+			case expr[i+1] == 'S':
+				out.WriteString(`[^`)
+				out.WriteString(ecmaWhitespaceClassBody)
+				out.WriteByte(']')
+				changed = true
+				i += 2
+			default:
+				replacement, next, escapeChanged := rewriteECMAScriptEscape(expr, i, unicode)
+				out.WriteString(replacement)
+				changed = changed || escapeChanged
+				i = next
+			}
+		case '[':
+			end := findECMAScriptClassEnd(expr, i)
+			if end < 0 {
+				out.WriteString(expr[i:])
+				i = len(expr)
+				continue
+			}
+			bodyStart := i + 1
+			negated := false
+			if bodyStart < end && expr[bodyStart] == '^' {
+				negated = true
+				bodyStart++
+			}
+			body := expr[bodyStart:end]
+			if body == "" {
+				if negated {
+					out.WriteString(`(?s:.)`)
+				} else {
+					out.WriteString(`(?!)`)
+				}
+				changed = true
+			} else {
+				rewritten, classChanged := rewriteECMAScriptClass(body, negated, unicode)
+				out.WriteString(rewritten)
+				changed = changed || classChanged
+			}
+			i = end + 1
+		case '.':
+			if dotAll {
+				out.WriteByte('.')
+			} else {
+				out.WriteString(`[^\r\n\x{2028}\x{2029}]`)
+				changed = true
+			}
+			i++
+		default:
+			out.WriteByte(expr[i])
+			i++
+		}
+	}
+	if !changed {
+		return expr, false
+	}
+	return out.String(), true
+}
+
+// rewriteECMAScriptEscape translates JavaScript's Unicode escape spelling to
+// PCRE2's spelling. In legacy (non-u) mode an invalid \x or \u starts an
+// identity escape, so the backslash is discarded and the following bytes are
+// parsed normally. Lone UTF-16 surrogates intentionally remain unsupported:
+// PCRE2's 8-bit UTF mode cannot represent those code units, so callers that
+// need exact JavaScript semantics must fall back to a UTF-16-aware engine.
+func rewriteECMAScriptEscape(expr string, start int, unicode bool) (string, int, bool) {
+	if start+1 >= len(expr) {
+		return expr[start:], len(expr), false
+	}
+	switch expr[start+1] {
+	case 'x':
+		if start+4 <= len(expr) && isHexBytes(expr[start+2:start+4]) {
+			return expr[start : start+4], start + 4, false
+		}
+		if !unicode {
+			return "x", start + 2, true
+		}
+	case 'u':
+		if unicode && start+2 < len(expr) && expr[start+2] == '{' {
+			if end := strings.IndexByte(expr[start+3:], '}'); end >= 0 {
+				end += start + 3
+				digits := expr[start+3 : end]
+				if len(digits) >= 1 && len(digits) <= 6 && isHexBytes(digits) {
+					value, _ := strconv.ParseUint(digits, 16, 32)
+					if value <= 0x10ffff && !isUTF16Surrogate(value) {
+						return `\x{` + digits + `}`, end + 1, true
+					}
+				}
+			}
+			return expr[start : start+2], start + 2, false
+		}
+		if !unicode && start+2 < len(expr) && expr[start+2] == '{' {
+			return "u", start + 2, true
+		}
+		if start+6 <= len(expr) && isHexBytes(expr[start+2:start+6]) {
+			value, _ := strconv.ParseUint(expr[start+2:start+6], 16, 16)
+			if value >= 0xd800 && value <= 0xdbff && unicode &&
+				start+12 <= len(expr) && expr[start+6:start+8] == `\u` &&
+				isHexBytes(expr[start+8:start+12]) {
+				low, _ := strconv.ParseUint(expr[start+8:start+12], 16, 16)
+				if low >= 0xdc00 && low <= 0xdfff {
+					codePoint := 0x10000 + ((value - 0xd800) << 10) + (low - 0xdc00)
+					return `\x{` + strconv.FormatUint(codePoint, 16) + `}`, start + 12, true
+				}
+			}
+			if !isUTF16Surrogate(value) {
+				return `\x{` + expr[start+2:start+6] + `}`, start + 6, true
+			}
+			return expr[start : start+6], start + 6, false
+		}
+		if !unicode {
+			return "u", start + 2, true
+		}
+	}
+	return expr[start : start+2], start + 2, false
+}
+
+func isHexBytes(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if !((s[i] >= '0' && s[i] <= '9') ||
+			(s[i] >= 'a' && s[i] <= 'f') ||
+			(s[i] >= 'A' && s[i] <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+func isUTF16Surrogate(value uint64) bool {
+	return value >= 0xd800 && value <= 0xdfff
+}
+
+func findECMAScriptClassEnd(expr string, start int) int {
+	for i := start + 1; i < len(expr); i++ {
+		if expr[i] == '\\' {
+			i++
+			continue
+		}
+		if expr[i] == ']' {
+			return i
+		}
+	}
+	return -1
+}
+
+// rewriteECMAScriptClass handles \s and \S inside a character class. A \S
+// mixed with other members cannot be represented by one traditional PCRE2
+// class, so it is expressed as a non-capturing alternation (or, for a negated
+// class, a one-character lookahead plus a consuming class).
+func rewriteECMAScriptClass(body string, negated, unicode bool) (string, bool) {
+	var members strings.Builder
+	members.Grow(len(body))
+	hasSpace, hasNonSpace, changed := false, false, false
+	for i := 0; i < len(body); {
+		if body[i] == '\\' && i+1 < len(body) {
+			switch body[i+1] {
+			case 's':
+				members.WriteString(ecmaWhitespaceClassBody)
+				hasSpace = true
+				i += 2
+				continue
+			case 'S':
+				hasNonSpace = true
+				i += 2
+				continue
+			default:
+				replacement, next, escapeChanged := rewriteECMAScriptEscape(body, i, unicode)
+				members.WriteString(replacement)
+				changed = changed || escapeChanged
+				i = next
+				continue
+			}
+		}
+		members.WriteByte(body[i])
+		i++
+	}
+
+	if !hasSpace && !hasNonSpace && !changed {
+		prefix := "["
+		if negated {
+			prefix = "[^"
+		}
+		return prefix + body + "]", false
+	}
+	other := members.String()
+	if !hasNonSpace {
+		prefix := "["
+		if negated {
+			prefix = "[^"
+		}
+		return prefix + other + "]", true
+	}
+	if hasSpace {
+		// \s and \S together cover the entire character domain.
+		if negated {
+			return `(?!)`, true
+		}
+		return `(?s:.)`, true
+	}
+	if !negated {
+		if other == "" {
+			return `[^` + ecmaWhitespaceClassBody + `]`, true
+		}
+		return `(?:[` + other + `]|[^` + ecmaWhitespaceClassBody + `])`, true
+	}
+	if other == "" {
+		return `[` + ecmaWhitespaceClassBody + `]`, true
+	}
+	return `(?:(?=[` + ecmaWhitespaceClassBody + `])[^` + other + `])`, true
+}
 
 // rewriteForPCRE2Compat 对 expr 依次应用各兼容改写, 返回改写结果与是否发生变化.
 func rewriteForPCRE2Compat(expr string) (string, bool) {

@@ -131,6 +131,9 @@ PCRE2 官方 1585 条输入语料上达到 **100%** 一致。需要留意的行�
 |---|---|---|
 | 变长后向断言 | `(?<=a+)b`、`(?<="text":\s*")` | PCRE2 10.47 原生支持有界变长后向断言；后向断言内的无界量词被收紧为 `{n,512}` 以便编译与匹配（超过 512 次重复不匹配） |
 | 字符类中集合简写紧邻 `-` | `[\d\w-_]`、`[a-\w]` | 将 `-` 视为字面量（与 .NET/RE2 一致），避免 "invalid range in character class" |
+| ECMAScript 空白 / 点号 | `\s`、`\S`、`.`、`[\Sx]` | 精确采用 JavaScript 的 WhiteSpace + LineTerminator 语义，包括 U+2028/U+2029 与 BOM |
+| ECMAScript 空字符类 | `[]`、`[^]` | 分别改写为永不匹配 / 匹配任意字符（包括行终止符） |
+| ECMAScript 转义 | `\x0`、`\u0065`、`\u{65}` | 将旧模式 identity escape 与 Unicode 码点转义改写成 PCRE2 等价形式 |
 
 ### 静默差异（能编译，但行为不同 —— 务必审计）
 
@@ -144,6 +147,14 @@ PCRE2 官方 1585 条输入语料上达到 **100%** 一致。需要留意的行�
 
 占有量词 `a++`、原子组 `(?>…)`、递归 `(?R)`、`\K`、子程序调用 `(?&name)` 在本库都能
 编译，而 `dlclark` 会拒绝。依赖这些特性的模式**无法**回迁到 `regexp2`。
+
+### JavaScript 运行时：保留窄范围 UTF-16 回退
+
+PCRE2 的 8 位 UTF 模式无法表示孤立的 UTF-16 surrogate 代码单元
+（`U+D800`-`U+DFFF`）。因此面向 rune 的 API 会返回可用 `errors.Is` 判断的
+`ErrUnsupportedRune`，而不是静默替换为 U+FFFD。Goja 一类 JavaScript 运行时应优先让
+PCRE2 处理兼容模式；当 pattern 含孤立 surrogate 转义，或输入匹配返回该错误时，再路由到
+UTF-16 感知后端。这是语义层面的窄范围回退，完全删除会破坏 ECMAScript 正确性。
 
 ## 安全性：灾难性回溯有界
 
